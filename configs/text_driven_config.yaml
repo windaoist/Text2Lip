@@ -1,0 +1,23 @@
+# Text-Driven Video Generation Pipeline Configuration
+
+model:
+  d_model: 512
+  nhead: 8
+  num_layers: 4
+  out_dim: 19200
+
+dataset:
+  grid_path: "data/dataset/grid"
+  preprocessed_path: "data/dataset/grid/preprocessed/s1"
+
+inference:
+  frames_per_viseme: 8
+  width: 512
+  height: 512
+  steps: 30
+  cfg: 2.5
+  fps: 25
+  seed: 420
+
+paths:
+  text_model_weights: "pretrained_weights/text_driven_model.pth"

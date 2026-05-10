@@ -1,0 +1,25 @@
+channels:
+- conda-forge
+- defaults
+- pytorch
+dependencies:
+- python=3.10
+- pip
+- pip:
+  - torch==2.1.2
+  - torchvision==0.16.2
+  - torchaudio==2.1.2
+  - g2p_en
+  - nltk
+  - opencv-python
+  - matplotlib
+  - diffusers==0.24.0
+  - transformers==4.38.1
+  - accelerate
+  - omegaconf==2.3.0
+  - einops==0.4.1
+  - mediapipe==0.10.9
+  - moviepy==1.0.3
+  - facenet-pytorch==2.5.0
+  - gradio
+name: text_driven_video
