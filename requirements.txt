@@ -30,5 +30,5 @@ nltk
 
 # --- 工具与 UI ---
 accelerate
-gradio
+gradio==4.44.1
 lpips
