@@ -3,18 +3,19 @@ import LipSync from './components/LipSync.vue'
 </script>
 
 <template>
-  <main>
+  <div class="app-wrapper">
     <LipSync />
-  </main>
+  </div>
 </template>
 
 <style>
 body {
   margin: 0;
-  background-color: #f0f2f5;
+  background-color: #f5f7fa;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
-main {
+.app-wrapper {
   min-height: 100vh;
 }
 </style>
