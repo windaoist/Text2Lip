@@ -112,13 +112,18 @@ class Audio2VideoPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    def decode_latents(self, latents):
+    # 修改 decode_latents 以支持进度回调 —— 新增 callback 参数，在 VAE 逐帧解码时报告进度
+    def decode_latents(self, latents, callback=None, callback_steps=1):
         video_length = latents.shape[2]
         latents = 1 / 0.18215 * latents
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         video = []
-        for frame_idx in tqdm(range(latents.shape[0])):
+        total_frames = latents.shape[0]
+        for frame_idx in tqdm(range(total_frames)):
             video.append(self.vae.decode(latents[frame_idx : frame_idx + 1]).sample)
+            # 帧解码进度回调 —— 每解码一帧就通知外部
+            if callback is not None and (frame_idx % callback_steps == 0):
+                callback(frame_idx, total_frames, None)
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
@@ -238,7 +243,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
                 uncond_tokens = [""] * batch_size
             elif type(prompt) is not type(negative_prompt):
                 raise TypeError(
-                    f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
+                    f"`negative_prompt` should be the same type to `prompt`, but got {negative_prompt} !="
                     f" {type(prompt)}."
                 )
             elif isinstance(negative_prompt, str):
@@ -352,6 +357,9 @@ class Audio2VideoPipeline(DiffusionPipeline):
         return_dict: bool = True,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
+        # 新增：用于接收外部进度回调的参数，与 callback 功能类似但专门用于进度追踪
+        # callback 是 diffusers 原生的参数，progress_callback 是自定义的进度回调
+        progress_callback: Optional[Callable[[int, int, Optional[torch.FloatTensor]], None]] = None,
         context_schedule="uniform",
         context_frames=12,
         context_stride=1,
@@ -528,6 +536,11 @@ class Audio2VideoPipeline(DiffusionPipeline):
                     noise_pred, t, latents, **extra_step_kwargs
                 ).prev_sample
 
+                # ===== 在去噪循环中调用 progress_callback，实现扩散步骤进度追踪 =====
+
+                if progress_callback is not None and (t_i % callback_steps == 0):
+                    progress_callback(t_i, num_inference_steps, timesteps)
+
                 if t_i == len(timesteps) - 1 or (
                     (t_i + 1) > num_warmup_steps and (t_i + 1) % self.scheduler.order == 0
                 ):
@@ -538,8 +551,14 @@ class Audio2VideoPipeline(DiffusionPipeline):
 
         if interpolation_factor > 0:
             latents = self.interpolate_latents(latents, interpolation_factor, device)
-        # Post-processing
-        images = self.decode_latents(latents)  # (b, c, f, h, w)
+        # 后处理阶段 —— 创建解码回调，将进度通过 progress_callback 传递给外部
+        # 这样 VAE 逐帧解码时也能实时更新进度
+        def decode_callback(frame_idx, total_frames, _):
+            if progress_callback is not None:
+                # 第三个参数传 None 表示当前是解码阶段（而非扩散阶段）
+                progress_callback(frame_idx, total_frames, None)
+        
+        images = self.decode_latents(latents, callback=decode_callback, callback_steps=1)
 
         # Convert to tensor
         if output_type == "tensor":
