@@ -138,6 +138,7 @@ async def generate_video_stream(
 
         def progress_callback(percent, stage, message):
             """Synchronous callback called from the GPU pipeline"""
+            print(f"[Debug Server] 收到进度回调: percent={percent:.1f}%, stage={stage}, msg={message}")
             # Use run_coroutine_threadsafe to put events from sync to async
             try:
                 loop = asyncio.get_event_loop()
@@ -152,6 +153,7 @@ async def generate_video_stream(
                         }),
                         loop
                     )
+                    print(f"[Debug Server] 已放入SSE队列: percent={percent:.1f}%, stage={stage}")
             except RuntimeError:
                 pass
 
@@ -159,8 +161,6 @@ async def generate_video_stream(
             """Run the generation in a thread"""
             try:
                 print(f"[*] Backend: Streaming generation for text: '{text}'")
-                # === [同步调试] 开始生成 ===
-                print(f"[*] [Sync Debug] Backend: 开始流式生成, text='{text}', image={image_path}")
 
                 # Initial progress
                 try:
@@ -176,10 +176,8 @@ async def generate_video_stream(
                             }),
                             loop
                         )
-                        # === [同步调试] 发送 start 事件 ===
-                        print(f"[*] [Sync Debug] SSE已入队 -> type=progress, stage=start, percent=0")
-                except RuntimeError as e:
-                    print(f"[*] [Sync Debug] 获取事件循环失败 (start): {e}")
+                except RuntimeError:
+                    pass
 
                 result_path = generate_video_from_text(
                     text, image_path, output_path, progress_callback=progress_callback
@@ -208,10 +206,8 @@ async def generate_video_stream(
                                 }),
                                 loop
                             )
-                            # === [同步调试] 发送 complete 事件 ===
-                            print(f"[*] [Sync Debug] SSE已入队 -> type=complete, video_url=/outputs/{output_filename}")
-                    except RuntimeError as e:
-                        print(f"[*] [Sync Debug] 获取事件循环失败 (complete): {e}")
+                    except RuntimeError:
+                        pass
                 else:
                     try:
                         loop = asyncio.get_event_loop()
@@ -223,14 +219,10 @@ async def generate_video_stream(
                                 }),
                                 loop
                             )
-                            # === [同步调试] 发送 error 事件 ===
-                            print(f"[*] [Sync Debug] SSE已入队 -> type=error, message=Video generation failed")
-                    except RuntimeError as e:
-                        print(f"[*] [Sync Debug] 获取事件循环失败 (error): {e}")
+                    except RuntimeError:
+                        pass
             except Exception as e:
                 print(f"[-] Error during streaming generation: {e}")
-                # === [同步调试] 生成异常 ===
-                print(f"[*] [Sync Debug] 生成线程异常: {e}")
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
@@ -245,8 +237,6 @@ async def generate_video_stream(
                     pass
             finally:
                 completed[0] = True
-                # === [同步调试] 生成线程结束 ===
-                print(f"[*] [Sync Debug] 生成线程结束, completed=True")
 
         # Start generation in a background thread
         import threading

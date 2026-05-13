@@ -32,8 +32,8 @@ const progressStages = ref<{ stage: string; label: string; percent: number }[]>(
   { stage: 'preprocess', label: '预处理图像', percent: 0 },
   { stage: 'text_features', label: '文本特征提取', percent: 5 },
   { stage: 'diffusion_start', label: '扩散生成准备', percent: 10 },
-  { stage: 'diffusion', label: '扩散推理', percent: 40 },
-  { stage: 'frame_generation', label: '逐帧生成', percent: 70 },
+  { stage: 'diffusion', label: '扩散模型推理', percent: 40 },
+  { stage: 'frame_gen', label: '帧解码生成', percent: 70 },
   { stage: 'saving', label: '保存视频', percent: 95 },
   { stage: 'complete', label: '生成完成', percent: 100 },
 ])
@@ -109,23 +109,28 @@ const resetProgress = () => {
 }
 
 const updateProgressFromSSE = (data: any) => {
+  console.log('[Debug Frontend] 收到SSE事件:', JSON.stringify(data))
   if (data.type === 'progress') {
     progressPercent.value = Math.round(data.percent)
     progressStage.value = data.stage
     progressMessage.value = data.message
+    console.log(`[Debug Frontend] 更新进度: ${Math.round(data.percent)}%, stage=${data.stage}, msg=${data.message}`)
   } else if (data.type === 'complete') {
     progressPercent.value = 100
     progressStage.value = 'complete'
     progressMessage.value = '生成完成!'
     videoUrl.value = `${API_BASE_URL}${data.video_url}`
+    console.log('[Debug Frontend] 生成完成:', data.video_url)
     ElMessage.success('视频生成成功!')
     fetchProjects()
   } else if (data.type === 'error') {
     errorMsg.value = data.message
+    console.error('[Debug Frontend] SSE错误:', data.message)
     ElMessage.error(data.message)
     isGenerating.value = false
     resetProgress()
   } else if (data.type === 'done') {
+    console.log('[Debug Frontend] SSE流结束')
     isGenerating.value = false
   }
 }
@@ -443,7 +448,7 @@ onUnmounted(() => {
                       'pending': progressPercent < stage.percent
                     }"
                     :style="{ 
-                      flex: progressStages.length === 7 ? 1 : 'auto',
+                      flex: 1,
                       minWidth: '8px'
                     }"
                   >

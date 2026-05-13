@@ -112,20 +112,17 @@ class Audio2VideoPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    # ============================================================================
-    # 修改 decode_latents 支持逐帧生成进度回调 - 用于前端实时显示帧生成进度
-    # ============================================================================
-    def decode_latents(self, latents, progress_callback=None):
+    def decode_latents(self, latents, decode_callback=None):
         video_length = latents.shape[2]
         latents = 1 / 0.18215 * latents
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         video = []
         total_frames = latents.shape[0]
+        # [中文注释] 逐帧解码VAE潜在表示，同时报告帧生成进度
         for frame_idx in tqdm(range(total_frames)):
             video.append(self.vae.decode(latents[frame_idx : frame_idx + 1]).sample)
-            # 逐帧解码进度回调: 从 0% 到 100% (相对于这一阶段)
-            if progress_callback is not None:
-                progress_callback(frame_idx + 1, total_frames)
+            if decode_callback is not None:
+                decode_callback(frame_idx, total_frames)
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
@@ -253,8 +250,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
             elif batch_size != len(negative_prompt):
                 raise ValueError(
                     f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
-                    f" {prompt} has batch size {len(prompt)}. Please make sure that passed `negative_prompt` matches"
-                    " the size of `prompt`."
+                    f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
+                    " the batch size of `prompt`."
                 )
             else:
                 uncond_tokens = negative_prompt
@@ -369,11 +366,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
         fps=25,
         audio_margin=2,
         audio_fea_final=None,
-        # ===========================================================
-        # 新增: 逐帧VAE解码进度回调 - 用于前端显示"逐帧生成"进度
-        # 签名: callback(current_frame, total_frames)
-        # ===========================================================
-        decode_progress_callback=None,
+        decode_callback=None,  # [中文注释] 帧解码进度回调 (frame_idx, total_frames)
         **kwargs,
     ):
         # Default height and width to unet
@@ -544,6 +537,11 @@ class Audio2VideoPipeline(DiffusionPipeline):
                     (t_i + 1) > num_warmup_steps and (t_i + 1) % self.scheduler.order == 0
                 ):
                     progress_bar.update()
+                
+                # [中文注释] 在每个扩散步骤结束时调用外部回调，用于报告进度
+                if callback is not None and ((t_i + 1) % callback_steps == 0 or t_i == len(timesteps) - 1):
+                    callback(self, t_i, t, {})
+                    print(f"[Debug Pipeline] 扩散步骤 {t_i+1}/{len(timesteps)} 完成")
 
             reference_control_reader.clear()
             reference_control_writer.clear()
@@ -551,8 +549,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
         if interpolation_factor > 0:
             latents = self.interpolate_latents(latents, interpolation_factor, device)
         # Post-processing
-        # 传入逐帧解码进度回调
-        images = self.decode_latents(latents, progress_callback=decode_progress_callback)  # (b, c, f, h, w)
+        # [中文注释] 传入decode_callback以便在帧解码时报告进度
+        images = self.decode_latents(latents, decode_callback=decode_callback)  # (b, c, f, h, w)
 
         # Convert to tensor
         if output_type == "tensor":
