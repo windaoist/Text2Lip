@@ -27,9 +27,12 @@ def load_config(config_path="configs/text_driven_config.yaml"):
         return yaml.safe_load(f)
 
 
-def generate_video_from_text(text, reference_image_path, output_path, config=None):
+def generate_video_from_text(text, reference_image_path, output_path, config=None, progress_callback=None):
     """
     End-to-end text-driven video generation (Direct text-to-viseme-to-video).
+    
+    Args:
+        progress_callback: Optional callable(percent, stage, message) for real-time progress
     """
     if config is None:
         config = load_config()
@@ -44,6 +47,9 @@ def generate_video_from_text(text, reference_image_path, output_path, config=Non
     # ==========================================
     # Step 1: Text -> Visemes with Phoneme Duration Prediction
     # ==========================================
+    if progress_callback:
+        progress_callback(0, 'text_to_viseme', '正在将文本转换为口型序列...')
+    
     print(f"[*] [Step 1] Processing text to visemes with duration prediction...")
     processor = TextToVisemeProcessor()
     
@@ -77,6 +83,9 @@ def generate_video_from_text(text, reference_image_path, output_path, config=Non
     # ==========================================
     # Step 2 & 3: Visemes -> Features -> Video
     # ==========================================
+    if progress_callback:
+        progress_callback(5, 'initializing_backend', '正在初始化视频生成引擎...')
+    
     print(f"[*] [Step 2&3] Mapping features + Generating video...")
     backend = EchoMimicBackend()
 
@@ -92,7 +101,8 @@ def generate_video_from_text(text, reference_image_path, output_path, config=Non
         steps=config['inference']['steps'],
         cfg=config['inference']['cfg'],
         fps=config['inference']['fps'],
-        seed=config['inference']['seed']
+        seed=config['inference']['seed'],
+        progress_callback=progress_callback
     )
 
     print(f"[*] [Success] Video generated: {result_path}")

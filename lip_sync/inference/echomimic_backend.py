@@ -212,9 +212,10 @@ class EchoMimicBackend:
         else:
             print(f"[-] 警告: 未找到文本驱动模型 {model_path}，将使用随机初始化。")
 
-    def generate_from_text(self, ref_image_path, viseme_ids, output_path, target_frames_len=None, width=512, height=512, steps=30, cfg=2.5, fps=24, seed=420):
+    def generate_from_text(self, ref_image_path, viseme_ids, output_path, target_frames_len=None, width=512, height=512, steps=30, cfg=2.5, fps=24, seed=420, progress_callback=None):
         """
         直接从视素 ID 序列生成视频
+        支持 progress_callback(percent, stage, message) 用于实时进度反馈
         """
         if not hasattr(self, 'text_model'):
             self.load_text_driven_model()
@@ -225,6 +226,9 @@ class EchoMimicBackend:
             generator = torch.manual_seed(np.random.randint(100, 1000000))
 
         # 1. 预处理参考图像 (人脸检测与裁剪)
+        if progress_callback:
+            progress_callback(0, 'preprocess', '正在预处理参考图像...')
+        
         face_img = cv2.imread(ref_image_path)
         face_mask = np.zeros(
             (face_img.shape[0], face_img.shape[1])).astype('uint8')
@@ -263,13 +267,46 @@ class EchoMimicBackend:
             
             if target_frames_len is None:
                 target_frames_len = viseme_ids.shape[1] * 8
+            
+            if progress_callback:
+                progress_callback(5, 'text_features', '正在提取文本特征...')
                 
             text_features = self.text_model(viseme_ids, target_frames_len=target_frames_len)  # (1, T, 19200)
+            
+            if progress_callback:
+                progress_callback(10, 'text_features', '文本特征提取完成，准备生成视频...')
 
             # 3. 映射到 EchoMimic 期望的维度 (1, T, 50, 384)
             T = text_features.shape[1]
             audio_fea_final = text_features.view(1, T, 50, 384).to(dtype=self.weight_dtype)
 
+            # 4. 自定义 pipeline callback 来跟踪扩散步骤进度和帧生成进度
+            diffusion_total = steps  # e.g. 30
+            frames_total = T       # e.g. 132
+            
+            # 扩散阶段占比 60% (10%~70%), 帧生成阶段占比 30% (70%~100%)
+            def make_pipeline_callback():
+                pipe_step_count = [0]
+                pipe_frame_count = [0]
+                
+                def callback(pipe, step_index, timestep, callback_kwargs):
+                    nonlocal pipe_step_count, pipe_frame_count
+                    pipe_step_count[0] += 1
+                    
+                    # 扩散步骤进度 (10% ~ 70%)
+                    diffusion_progress = (pipe_step_count[0] / diffusion_total) * 60
+                    overall = 10 + diffusion_progress
+                    
+                    msg = f'扩散步骤 {pipe_step_count[0]}/{diffusion_total}'
+                    if progress_callback:
+                        progress_callback(overall, 'diffusion', msg)
+                    
+                    return callback_kwargs
+                return callback
+            
+            if progress_callback:
+                progress_callback(10, 'diffusion_start', f'开始扩散生成 ({diffusion_total} 步, {T} 帧)...')
+            
             print(f"[*] 正在从文本特征生成视频 (帧数: {T})...")
 
             video = self.pipe(
@@ -286,13 +323,22 @@ class EchoMimicBackend:
                 context_frames=12,
                 fps=fps,
                 context_overlap=3,
-                audio_fea_final=audio_fea_final  # 传入预计算的特征
+                audio_fea_final=audio_fea_final,  # 传入预计算的特征
+                callback=make_pipeline_callback() if progress_callback else None,
+                callback_steps=1
             ).videos
+
+            if progress_callback:
+                progress_callback(95, 'saving', '正在保存视频文件...')
 
             final_video = torch.cat([video], dim=0)
             save_videos_grid(final_video, output_path, fps=fps)
 
             print(f"[*] 文本驱动视频生成完成: {output_path}")
+            
+            if progress_callback:
+                progress_callback(100, 'complete', '视频生成完成!')
+                
             return output_path
 
     def _select_face(self, det_bboxes, probs):
