@@ -117,9 +117,9 @@ onMounted(() => {
       <el-col :span="22">
         <h1 class="app-title">
           <el-icon :size="32" color="#409eff"><VideoCamera /></el-icon>
-          Text-to-LipSync Video Generator
+          文字驱动唇形同步视频生成器
         </h1>
-        <p class="subtitle">Generate lip-synced videos from plain text and a single image</p>
+        <p class="subtitle">只需一段文字和一张照片，即可生成唇形同步视频</p>
       </el-col>
     </el-row>
 
@@ -130,26 +130,26 @@ onMounted(() => {
         <el-card shadow="always" class="input-card">
           <template #header>
             <div class="card-header">
-              <span>Generate New Video</span>
+            <span>生成新视频</span>
               <el-button type="primary" :icon="FolderOpened" text @click="openProjectsDialog">
-                Browse Projects
+                浏览历史记录
               </el-button>
             </div>
           </template>
 
           <el-form label-position="top">
             <!-- Text Input -->
-            <el-form-item label="1. Enter Text">
+            <el-form-item label="1. 输入文本">
               <el-input
                 v-model="textInput"
                 type="textarea"
                 :rows="4"
-                placeholder="Type what you want the person to say..."
+                placeholder="输入你想让视频人物说的话..."
               />
             </el-form-item>
 
             <!-- Image Upload -->
-            <el-form-item label="2. Upload Reference Image">
+            <el-form-item label="2. 上传参考照片">
               <div v-if="!imagePreview" class="upload-wrapper">
                 <el-upload
                   :auto-upload="false"
@@ -159,15 +159,15 @@ onMounted(() => {
                 >
                   <div class="upload-placeholder">
                     <el-icon :size="40" color="#c0c4cc"><Plus /></el-icon>
-                    <span>Click to upload face image</span>
-                    <span class="upload-hint">Supports JPG, PNG</span>
+                    <span>点击上传人脸照片</span>
+                    <span class="upload-hint">支持 JPG、PNG 格式</span>
                   </div>
                 </el-upload>
               </div>
               <div v-else class="preview-wrapper">
                 <el-image :src="imagePreview" fit="contain" class="preview-img" />
                 <el-button type="danger" size="small" class="remove-btn" @click="removeImage">
-                  Remove
+                  移除
                 </el-button>
               </div>
             </el-form-item>
@@ -182,10 +182,10 @@ onMounted(() => {
                 @click="generateVideo"
               >
                 <template v-if="isGenerating">
-                  Generating... (May take a minute)
+                  正在生成...（可能需要一分钟）
                 </template>
                 <template v-else>
-                  Generate Lip-Sync Video
+                  生成唇形同步视频
                 </template>
               </el-button>
             </el-form-item>
@@ -207,7 +207,7 @@ onMounted(() => {
         <el-card shadow="always" class="result-card">
           <template #header>
             <div class="card-header">
-              <span>3. Output Video</span>
+            <span>3. 输出视频</span>
             </div>
           </template>
 
@@ -215,7 +215,7 @@ onMounted(() => {
             <!-- Loading State -->
             <div v-if="isGenerating" class="loading-state">
               <el-progress type="circle" :percentage="50" :stroke-width="6" status="warning" />
-              <p class="loading-text">Diffusion model is processing...</p>
+              <p class="loading-text">扩散模型正在处理中...</p>
             </div>
 
             <!-- Video Result -->
@@ -225,7 +225,7 @@ onMounted(() => {
 
             <!-- Empty State -->
             <div v-else class="empty-state">
-              <el-empty description="Your video will appear here" />
+              <el-empty description="生成的视频将显示在这里" />
             </div>
           </div>
         </el-card>
@@ -235,7 +235,7 @@ onMounted(() => {
     <!-- Projects Dialog -->
     <el-dialog
       v-model="showProjectsDialog"
-      title="Generated Projects"
+      title="已生成的项目"
       width="80%"
       :top="'5vh'"
       class="projects-dialog"
@@ -244,19 +244,19 @@ onMounted(() => {
         <!-- Project List -->
         <el-col :span="selectedProjectVideo ? 14 : 24">
           <el-table :data="projects" stripe style="width: 100%" max-height="500">
-            <el-table-column prop="text" label="Text" min-width="200">
+            <el-table-column prop="text" label="文本" min-width="200">
               <template #default="{ row }">
                 <el-tooltip :content="row.text" placement="top">
                   <span>{{ truncateText(row.text) }}</span>
                 </el-tooltip>
               </template>
             </el-table-column>
-            <el-table-column prop="created_at" label="Created At" width="180">
+            <el-table-column prop="created_at" label="创建时间" width="180">
               <template #default="{ row }">
                 {{ formatDate(row.created_at) }}
               </template>
             </el-table-column>
-            <el-table-column label="Action" width="120" fixed="right">
+            <el-table-column label="操作" width="120" fixed="right">
               <template #default="{ row }">
                 <el-button
                   type="primary"
@@ -264,14 +264,14 @@ onMounted(() => {
                   :icon="VideoCamera"
                   @click="playProjectVideo(row.video_url)"
                 >
-                  Play
+                  播放
                 </el-button>
               </template>
             </el-table-column>
           </el-table>
 
           <div v-if="projects.length === 0" class="empty-projects">
-            <el-empty description="No projects generated yet" />
+            <el-empty description="暂无已生成的项目" />
           </div>
         </el-col>
 
@@ -279,7 +279,7 @@ onMounted(() => {
         <el-col :span="10" v-if="selectedProjectVideo">
           <el-card shadow="never">
             <template #header>
-              <span>Video Preview</span>
+              <span>视频预览</span>
             </template>
             <video :src="selectedProjectVideo" controls class="preview-video"></video>
           </el-card>
@@ -287,8 +287,8 @@ onMounted(() => {
       </el-row>
 
       <template #footer>
-        <el-button @click="showProjectsDialog = false">Close</el-button>
-        <el-button type="primary" :icon="Refresh" @click="fetchProjects">Refresh</el-button>
+        <el-button @click="showProjectsDialog = false">关闭</el-button>
+        <el-button type="primary" :icon="Refresh" @click="fetchProjects">刷新</el-button>
       </template>
     </el-dialog>
   </div>
