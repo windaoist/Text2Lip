@@ -1,3 +1,54 @@
-data
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment
+.venv/
+env/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# Data and datasets
+data/
+datasets/
+
+# Pretrained models and weights
+pretrained_weights/
+
+# Generated output
+output/
+
+# Training logs and temp files
 loss.txt
-pretrained_weights
+loss2.txt
+123.txt
+temp_prototype_audio.wav
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Third-party large assets (videos, audios, images)
+third_party/EchoMimic/assets/driven_videos/
+third_party/EchoMimic/assets/test_audios/
+third_party/EchoMimic/assets/test_imgs/
+third_party/EchoMimic/assets/test_pose_demo/
+third_party/EchoMimic/assets/test_pose_demo_audios/
+third_party/EchoMimic/assets/test_pose_demo_pose/
+third_party/EchoMimic/temp_prototype_audio.wav
+
+# Third-party Python cache
+third_party/EchoMimic/src/__pycache__/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
