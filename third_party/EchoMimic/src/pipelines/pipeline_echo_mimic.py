@@ -35,6 +35,7 @@ from src.models.mutual_self_attention import ReferenceAttentionControl
 from src.pipelines.context import get_context_scheduler
 from src.pipelines.utils import get_tensor_interpolation_method
 
+
 @dataclass
 class Audio2VideoPipelineOutput(BaseOutput):
     videos: Union[torch.Tensor, np.ndarray]
@@ -75,7 +76,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
             tokenizer=tokenizer,
             text_encoder=text_encoder,
         )
-        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        self.vae_scale_factor = 2 ** (
+            len(self.vae.config.block_out_channels) - 1)
         self.clip_image_processor = CLIPImageProcessor()
         self.ref_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True
@@ -91,7 +93,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
         if is_accelerate_available():
             from accelerate import cpu_offload
         else:
-            raise ImportError("Please install accelerate via `pip install accelerate`")
+            raise ImportError(
+                "Please install accelerate via `pip install accelerate`")
 
         device = torch.device(f"cuda:{gpu_id}")
 
@@ -112,18 +115,23 @@ class Audio2VideoPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    # 修改 decode_latents 以支持进度回调 —— 新增 callback 参数，在 VAE 逐帧解码时报告进度
-    def decode_latents(self, latents, callback=None, callback_steps=1):
+    def decode_latents(self, latents, decode_progress_callback=None):
+        """解码潜变量为像素视频
+        Args:
+            latents: 潜变量张量
+            decode_progress_callback: 可选回调，接受 (current_frame, total_frames) 用于进度报告
+        """
         video_length = latents.shape[2]
         latents = 1 / 0.18215 * latents
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         video = []
         total_frames = latents.shape[0]
         for frame_idx in tqdm(range(total_frames)):
-            video.append(self.vae.decode(latents[frame_idx : frame_idx + 1]).sample)
-            # 帧解码进度回调 —— 每解码一帧就通知外部
-            if callback is not None and (frame_idx % callback_steps == 0):
-                callback(frame_idx, total_frames, None)
+            # 每解码一帧就回调报告进度
+            if decode_progress_callback is not None:
+                decode_progress_callback(frame_idx + 1, total_frames)
+            video.append(self.vae.decode(
+                latents[frame_idx: frame_idx + 1]).sample)
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
@@ -212,7 +220,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
             text_input_ids, untruncated_ids
         ):
             removed_text = self.tokenizer.batch_decode(
-                untruncated_ids[:, self.tokenizer.model_max_length - 1 : -1]
+                untruncated_ids[:, self.tokenizer.model_max_length - 1: -1]
             )
 
         if (
@@ -243,7 +251,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
                 uncond_tokens = [""] * batch_size
             elif type(prompt) is not type(negative_prompt):
                 raise TypeError(
-                    f"`negative_prompt` should be the same type to `prompt`, but got {negative_prompt} !="
+                    f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
                     f" {type(prompt)}."
                 )
             elif isinstance(negative_prompt, str):
@@ -282,7 +290,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
 
             # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
             seq_len = uncond_embeddings.shape[1]
-            uncond_embeddings = uncond_embeddings.repeat(1, num_videos_per_prompt, 1)
+            uncond_embeddings = uncond_embeddings.repeat(
+                1, num_videos_per_prompt, 1)
             uncond_embeddings = uncond_embeddings.view(
                 batch_size * num_videos_per_prompt, seq_len, -1
             )
@@ -313,7 +322,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
         )
 
         org_video_length = latents.shape[2]
-        rate = [i / interpolation_factor for i in range(interpolation_factor)][1:]
+        rate = [
+            i / interpolation_factor for i in range(interpolation_factor)][1:]
 
         new_index = 0
 
@@ -352,14 +362,14 @@ class Audio2VideoPipeline(DiffusionPipeline):
         guidance_scale,
         num_images_per_prompt=1,
         eta: float = 0.0,
-        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        generator: Optional[Union[torch.Generator,
+                                  List[torch.Generator]]] = None,
         output_type: Optional[str] = "tensor",
         return_dict: bool = True,
-        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        callback: Optional[Callable[[
+            int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
-        # 新增：用于接收外部进度回调的参数，与 callback 功能类似但专门用于进度追踪
-        # callback 是 diffusers 原生的参数，progress_callback 是自定义的进度回调
-        progress_callback: Optional[Callable[[int, int, Optional[torch.FloatTensor]], None]] = None,
+        decode_progress_callback: Optional[Callable[[int, int], None]] = None,
         context_schedule="uniform",
         context_frames=12,
         context_stride=1,
@@ -403,8 +413,10 @@ class Audio2VideoPipeline(DiffusionPipeline):
 
         if audio_fea_final is None:
             whisper_feature = self.audio_guider.audio2feat(audio_path)
-            whisper_chunks = self.audio_guider.feature2chunks(feature_array=whisper_feature, fps=fps)
-            audio_fea_final = torch.Tensor(whisper_chunks).to(dtype=self.vae.dtype, device=self.vae.device)
+            whisper_chunks = self.audio_guider.feature2chunks(
+                feature_array=whisper_feature, fps=fps)
+            audio_fea_final = torch.Tensor(whisper_chunks).to(
+                dtype=self.vae.dtype, device=self.vae.device)
             audio_fea_final = audio_fea_final.unsqueeze(0)
 
         print("audio_fea_final:", audio_fea_final.shape)
@@ -427,7 +439,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
         # print(video_length, latents.shape)
         c_face_locator_tensor = self.face_locator(face_mask_tensor)
         uc_face_locator_tensor = torch.zeros_like(c_face_locator_tensor)
-        face_locator_tensor = torch.cat([uc_face_locator_tensor, c_face_locator_tensor], dim=0)
+        face_locator_tensor = torch.cat(
+            [uc_face_locator_tensor, c_face_locator_tensor], dim=0)
         # Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
@@ -444,7 +457,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
         context_scheduler = get_context_scheduler(context_schedule)
 
         # denoising loop
-        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+        num_warmup_steps = len(timesteps) - \
+            num_inference_steps * self.scheduler.order
         context_queue = list(
             context_scheduler(
                 0,
@@ -460,9 +474,15 @@ class Audio2VideoPipeline(DiffusionPipeline):
         print("face_locator_tensor shape:", face_locator_tensor.shape)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for t_i, t in enumerate(timesteps):
+                # === 在扩散循环中调用 callback 以报告进度 ===
+                if callback is not None and t_i % callback_steps == 0:
+                    callback_kwargs = {}
+                    callback(self, t_i, t, callback_kwargs)
+
                 noise_pred = torch.zeros(
                     (
-                        latents.shape[0] * (2 if do_classifier_free_guidance else 1),
+                        latents.shape[0] *
+                        (2 if do_classifier_free_guidance else 1),
                         *latents.shape[1:],
                     ),
                     device=latents.device,
@@ -482,32 +502,37 @@ class Audio2VideoPipeline(DiffusionPipeline):
                         encoder_hidden_states=None,
                         return_dict=False,
                     )
-                    reference_control_reader.update(reference_control_writer, do_classifier_free_guidance=do_classifier_free_guidance)
+                    reference_control_reader.update(
+                        reference_control_writer, do_classifier_free_guidance=do_classifier_free_guidance)
 
-
-                num_context_batches = math.ceil(len(context_queue) / context_batch_size)
+                num_context_batches = math.ceil(
+                    len(context_queue) / context_batch_size)
 
                 global_context = []
                 for j in range(num_context_batches):
                     global_context.append(
                         context_queue[
-                            j * context_batch_size : (j + 1) * context_batch_size
+                            j * context_batch_size: (j + 1) * context_batch_size
                         ]
                     )
 
                 for context in global_context:
-                    new_context = [[0 for _ in range(len(context[c_j]))] for c_j in range(len(context))]
+                    new_context = [
+                        [0 for _ in range(len(context[c_j]))] for c_j in range(len(context))]
                     for c_j in range(len(context)):
                         for c_i in range(len(context[c_j])):
-                            new_context[c_j][c_i] = (context[c_j][c_i] + t_i * 2) % video_length
+                            new_context[c_j][c_i] = (
+                                context[c_j][c_i] + t_i * 2) % video_length
 
                     latent_model_input = (
                         torch.cat([latents[:, :, c] for c in new_context])
                         .to(device)
                         .repeat(2 if do_classifier_free_guidance else 1, 1, 1, 1, 1)
                     )
-                    c_audio_latents = torch.cat([audio_fea_final[:, c] for c in new_context]).to(device)
-                    audio_latents = torch.cat([torch.zeros_like(c_audio_latents), c_audio_latents], 0)
+                    c_audio_latents = torch.cat(
+                        [audio_fea_final[:, c] for c in new_context]).to(device)
+                    audio_latents = torch.cat(
+                        [torch.zeros_like(c_audio_latents), c_audio_latents], 0)
 
                     latent_model_input = self.scheduler.scale_model_input(
                         latent_model_input, t
@@ -527,7 +552,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
 
                 # perform guidance
                 if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = (noise_pred / counter).chunk(2)
+                    noise_pred_uncond, noise_pred_text = (
+                        noise_pred / counter).chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (
                         noise_pred_text - noise_pred_uncond
                     )
@@ -536,13 +562,9 @@ class Audio2VideoPipeline(DiffusionPipeline):
                     noise_pred, t, latents, **extra_step_kwargs
                 ).prev_sample
 
-                # ===== 在去噪循环中调用 progress_callback，实现扩散步骤进度追踪 =====
-
-                if progress_callback is not None and (t_i % callback_steps == 0):
-                    progress_callback(t_i, num_inference_steps, timesteps)
-
                 if t_i == len(timesteps) - 1 or (
-                    (t_i + 1) > num_warmup_steps and (t_i + 1) % self.scheduler.order == 0
+                    (t_i + 1) > num_warmup_steps and (t_i +
+                                                      1) % self.scheduler.order == 0
                 ):
                     progress_bar.update()
 
@@ -550,15 +572,12 @@ class Audio2VideoPipeline(DiffusionPipeline):
             reference_control_writer.clear()
 
         if interpolation_factor > 0:
-            latents = self.interpolate_latents(latents, interpolation_factor, device)
-        # 后处理阶段 —— 创建解码回调，将进度通过 progress_callback 传递给外部
-        # 这样 VAE 逐帧解码时也能实时更新进度
-        def decode_callback(frame_idx, total_frames, _):
-            if progress_callback is not None:
-                # 第三个参数传 None 表示当前是解码阶段（而非扩散阶段）
-                progress_callback(frame_idx, total_frames, None)
-        
-        images = self.decode_latents(latents, callback=decode_callback, callback_steps=1)
+            latents = self.interpolate_latents(
+                latents, interpolation_factor, device)
+        # Post-processing
+        # 传入 decode_progress_callback 以便前端追踪帧解码进度
+        images = self.decode_latents(
+            latents, decode_progress_callback=decode_progress_callback)  # (b, c, f, h, w)
 
         # Convert to tensor
         if output_type == "tensor":
@@ -595,7 +614,8 @@ class Audio2VideoPipeline(DiffusionPipeline):
         print("tensor:", tensor.shape)
 
         # 重新整理输出形状为 (B, F, C, W, H)
-        internal_frames = rearrange(internal_frames, "b (c h w) f -> b c f h w", c=c, h=h, w=w)
+        internal_frames = rearrange(
+            internal_frames, "b (c h w) f -> b c f h w", c=c, h=h, w=w)
         print("internal_frames:", internal_frames.shape)
         # 将第一帧和最后一帧保持不变，合并结果
         # 首帧 tensor[:, :, 0:1, :, :], 中间帧 internal_frames[:, :, 1:-1, :, :], 最后帧 tensor[:, :, -1:, :, :]

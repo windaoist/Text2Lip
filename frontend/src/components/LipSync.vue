@@ -33,7 +33,7 @@ const progressStages = ref<{ stage: string; label: string; percent: number }[]>(
   { stage: 'text_features', label: '文本特征提取', percent: 5 },
   { stage: 'diffusion_start', label: '扩散生成准备', percent: 10 },
   { stage: 'diffusion', label: '扩散模型推理', percent: 40 },
-  { stage: 'frame_decode', label: 'VAE逐帧解码', percent: 70 },
+  { stage: 'decoding', label: '解码视频帧', percent: 70 },
   { stage: 'saving', label: '保存视频', percent: 95 },
   { stage: 'complete', label: '生成完成', percent: 100 },
 ])

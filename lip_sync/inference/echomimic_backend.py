@@ -280,43 +280,45 @@ class EchoMimicBackend:
             T = text_features.shape[1]
             audio_fea_final = text_features.view(1, T, 50, 384).to(dtype=self.weight_dtype)
 
-            # 4. 构建进度追踪闭包
-            # 扩散步骤数 (如30步) + VAE 帧解码数 (如132帧) 构成完整的进度
-            diffusion_total = steps
-            frames_total = T
-
-            # 进度分配: 扩散 10%~70% (60%), 帧解码 70%~95% (25%), 保存 95%~100% (5%)
-            # 这些闭包会被 pipeline_echo_mimic.py 中的 callback 调用
-            # callback 签名: callback(step_index, total_steps, timesteps_or_phase)
-            # - 扩散阶段: step_index 是当前扩散步序号, total_steps 是总步数, timesteps_or_phase 是 timesteps 张量
-            # - 解码阶段: step_index 是当前帧序号, total_steps 是总帧数, timesteps_or_phase 是 None (表示解码阶段)
+            # 4. 自定义 pipeline callback 来跟踪扩散步骤进度和帧生成进度
+            diffusion_total = steps  # e.g. 30
+            frames_total = T       # e.g. 132
             
-            # 用于在 callback 内部区分扩散和解码阶段的全局变量
-            callback_phase = ['diffusion']  # 'diffusion' 或 'decode'
-            
-            def pipeline_progress_callback(current, total, phase_or_timestep):
-                """被 pipeline 调用的回调, current/total 标识进度"""
-                nonlocal callback_phase
+            # 扩散阶段占比 60% (10%~70%), 帧解码生成阶段占比 25% (70%~95%)
+            def make_pipeline_callback():
+                pipe_step_count = [0]
                 
-                if phase_or_timestep is None:
-                    # VAE 解码阶段 (由 decode_latents 中的 decode_callback 调用)
-                    callback_phase[0] = 'decode'
-                    frame_progress = (current / total) * 25  # 70%~95% 区间
-                    overall = 70 + frame_progress
-                    msg = f'正在解码视频帧 {current+1}/{total}'
-                    if progress_callback:
-                        progress_callback(overall, 'frame_decode', msg)
-                else:
-                    # 扩散阶段 (由 denoising 循环调用)
-                    callback_phase[0] = 'diffusion'
-                    if total > 0:
-                        diffusion_progress = (current / total) * 60  # 10%~70% 区间
-                    else:
-                        diffusion_progress = 0
+                def callback(pipe, step_index, timestep, callback_kwargs):
+                    nonlocal pipe_step_count
+                    pipe_step_count[0] += 1
+                    
+                    # 扩散步骤进度 (10% ~ 70%)
+                    diffusion_progress = (pipe_step_count[0] / diffusion_total) * 60
                     overall = 10 + diffusion_progress
-                    msg = f'扩散步骤 {current}/{total}'
+                    
+                    msg = f'扩散步骤 {pipe_step_count[0]}/{diffusion_total}'
                     if progress_callback:
                         progress_callback(overall, 'diffusion', msg)
+                    
+                    return callback_kwargs
+                return callback
+            
+            # 中文注释: 帧解码阶段回调，从 70% 推进到 95%
+            def make_decode_callback():
+                decode_count = [0]
+                decode_total_frames = [T]
+                
+                def decode_cb(current, total):
+                    nonlocal decode_count, decode_total_frames
+                    decode_count[0] = current
+                    decode_total_frames[0] = total
+                    # 70% ~ 95% 对应帧解码进度
+                    decode_progress = (current / total) * 25
+                    overall = 70 + decode_progress
+                    msg = f'正在解码视频帧 {current}/{total}'
+                    if progress_callback:
+                        progress_callback(overall, 'decoding', msg)
+                return decode_cb
             
             if progress_callback:
                 progress_callback(10, 'diffusion_start', f'开始扩散生成 ({diffusion_total} 步, {T} 帧)...')
@@ -338,7 +340,9 @@ class EchoMimicBackend:
                 fps=fps,
                 context_overlap=3,
                 audio_fea_final=audio_fea_final,  # 传入预计算的特征
-                progress_callback=pipeline_progress_callback if progress_callback else None,
+                callback=make_pipeline_callback() if progress_callback else None,
+                callback_steps=1,
+                decode_progress_callback=make_decode_callback() if progress_callback else None
             ).videos
 
             if progress_callback:
