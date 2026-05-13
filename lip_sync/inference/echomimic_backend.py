@@ -280,50 +280,61 @@ class EchoMimicBackend:
             T = text_features.shape[1]
             audio_fea_final = text_features.view(1, T, 50, 384).to(dtype=self.weight_dtype)
 
-            # 4. 自定义 pipeline callback 来跟踪扩散步骤进度和帧生成进度
+                # 4. 自定义 pipeline callback 来跟踪扩散步骤进度和帧生成进度
+            # 两个阶段: 扩散推理 (10%~70%) 和 逐帧VAE解码生成 (70%~95%)
             diffusion_total = steps  # e.g. 30
             frames_total = T       # e.g. 132
             
-            # 扩散阶段占比 60% (10%~70%), 帧解码生成阶段占比 25% (70%~95%)
+            print(f"[*] [Sync Debug] 准备进度回调: diffusion_total={diffusion_total}, frames_total={frames_total}")
+            
+            # 扩散阶段占比 60% (10%~70%), 帧生成阶段占比 25% (70%~95%)
             def make_pipeline_callback():
                 pipe_step_count = [0]
                 
                 def callback(pipe, step_index, timestep, callback_kwargs):
                     nonlocal pipe_step_count
                     pipe_step_count[0] += 1
+                    step = pipe_step_count[0]
                     
                     # 扩散步骤进度 (10% ~ 70%)
-                    diffusion_progress = (pipe_step_count[0] / diffusion_total) * 60
+                    diffusion_progress = (step / diffusion_total) * 60
                     overall = 10 + diffusion_progress
                     
-                    msg = f'扩散步骤 {pipe_step_count[0]}/{diffusion_total}'
+                    msg = f'扩散步骤 {step}/{diffusion_total}'
                     if progress_callback:
                         progress_callback(overall, 'diffusion', msg)
+                    
+                    # === 调试: 每步都打印同步信号 ===
+                    print(f"[*] [Sync Debug] SSE发送 -> stage=diffusion, percent={overall:.1f}%, step={step}/{diffusion_total}")
                     
                     return callback_kwargs
                 return callback
             
-            # 中文注释: 帧解码阶段回调，从 70% 推进到 95%
+            # 帧生成阶段回调: VAE逐帧解码进度 (70%~95%)
+            decode_frame_count = [0]
             def make_decode_callback():
-                decode_count = [0]
-                decode_total_frames = [T]
-                
-                def decode_cb(current, total):
-                    nonlocal decode_count, decode_total_frames
-                    decode_count[0] = current
-                    decode_total_frames[0] = total
-                    # 70% ~ 95% 对应帧解码进度
-                    decode_progress = (current / total) * 25
-                    overall = 70 + decode_progress
-                    msg = f'正在解码视频帧 {current}/{total}'
+                def on_decode_frame(current, total):
+                    nonlocal decode_frame_count
+                    decode_frame_count[0] = current
+                    # 帧生成阶段占比 25% (70%~95%), 每帧按比例分配
+                    frame_progress = (current / total) * 25  # 25% 分配给帧生成阶段
+                    overall = 70 + frame_progress
+                    
+                    msg = f'帧生成 {current}/{total}'
                     if progress_callback:
-                        progress_callback(overall, 'decoding', msg)
-                return decode_cb
+                        progress_callback(overall, 'frame_generation', msg)
+                    
+                    # === 调试: 每帧打印同步信号 ===
+                    if current % 10 == 0 or current == total:  # 每10帧打印一次，避免刷屏
+                        print(f"[*] [Sync Debug] SSE发送 -> stage=frame_generation, percent={overall:.1f}%, frame={current}/{total}")
+                return on_decode_frame
             
             if progress_callback:
                 progress_callback(10, 'diffusion_start', f'开始扩散生成 ({diffusion_total} 步, {T} 帧)...')
             
             print(f"[*] 正在从文本特征生成视频 (帧数: {T})...")
+            print(f"[*] [Sync Debug] 阶段1: 扩散推理 - 共 {diffusion_total} 步 (10%~70%)")
+            print(f"[*] [Sync Debug] 阶段2: VAE逐帧解码生成 - 共 {T} 帧 (70%~95%)")
 
             video = self.pipe(
                 ref_image_pil,
@@ -342,11 +353,13 @@ class EchoMimicBackend:
                 audio_fea_final=audio_fea_final,  # 传入预计算的特征
                 callback=make_pipeline_callback() if progress_callback else None,
                 callback_steps=1,
-                decode_progress_callback=make_decode_callback() if progress_callback else None
+                # 新增: 传入逐帧VAE解码进度回调
+                decode_progress_callback=make_decode_callback() if progress_callback else None,
             ).videos
 
             if progress_callback:
                 progress_callback(95, 'saving', '正在保存视频文件...')
+                print(f"[*] [Sync Debug] SSE发送 -> stage=saving, percent=95%")
 
             final_video = torch.cat([video], dim=0)
             save_videos_grid(final_video, output_path, fps=fps)
