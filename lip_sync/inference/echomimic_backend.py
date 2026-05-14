@@ -283,31 +283,39 @@ class EchoMimicBackend:
             # 4. 自定义 pipeline callback 来跟踪扩散步骤进度和帧生成进度
             diffusion_total = steps  # e.g. 30
             frames_total = T       # e.g. 132
+            # 用于帧解码进度的可修改容器 (中文注释)
+            frame_decode_count = [0]
+            # 扩散进度百分比的上限: 扩散结束后进度为70% (中文注释)
+            DIFFUSION_END_PERCENT = 70
             
-            # [中文注释] 扩散阶段占比 60% (10%~70%), 帧生成阶段占比 30% (70%~100%)
-            # pipeline回调：扩散每一步时调用
-            def diffusion_step_callback(pipe, step_index, timestep, callback_kwargs):
-                # 扩散步骤进度 (10% ~ 70%)
-                diffusion_progress = ((step_index + 1) / diffusion_total) * 60
-                overall = 10 + diffusion_progress
+            # 扩散步骤回调 (10% ~ 70%)
+            def make_pipeline_callback():
+                pipe_step_count = [0]
                 
-                msg = f'扩散步骤 {step_index+1}/{diffusion_total}'
-                print(f"[Debug Backend] 发送进度信号: overall={overall:.1f}%, stage=diffusion, msg={msg}")
-                if progress_callback:
-                    progress_callback(overall, 'diffusion', msg)
-                
-                return callback_kwargs
+                def callback(pipe, step_index, timestep, callback_kwargs):
+                    nonlocal pipe_step_count
+                    pipe_step_count[0] += 1
+                    
+                    # 扩散步骤进度 (10% ~ 70%)
+                    diffusion_progress = (pipe_step_count[0] / diffusion_total) * (DIFFUSION_END_PERCENT - 10)
+                    overall = 10 + diffusion_progress
+                    
+                    msg = f'扩散步骤 {pipe_step_count[0]}/{diffusion_total}'
+                    if progress_callback:
+                        progress_callback(overall, 'diffusion', msg)
+                    
+                    return callback_kwargs
+                return callback
             
-            # [中文注释] 帧解码回调：每解码一帧时调用
-            def frame_decode_callback(frame_idx, total):
-                # 帧生成进度 (70% ~ 95%)
-                frame_progress = ((frame_idx + 1) / total) * 25
-                overall = 70 + frame_progress
-                
-                msg = f'生成帧 {frame_idx+1}/{total}'
-                print(f"[Debug Backend] 发送进度信号: overall={overall:.1f}%, stage=frame_gen, msg={msg}")
+            # 帧解码回调 (70% ~ 95%) 由 pipeline 的 decode_latents 逐帧调用 (中文注释)
+            def frame_decode_callback(frame_idx, total_frames):
+                frame_decode_count[0] = frame_idx + 1
+                # 帧解码进度: 70% ~ 95%
+                frame_progress = (frame_decode_count[0] / total_frames) * (95 - DIFFUSION_END_PERCENT)
+                overall = DIFFUSION_END_PERCENT + frame_progress
+                msg = f'正在生成视频帧 {frame_decode_count[0]}/{total_frames}'
                 if progress_callback:
-                    progress_callback(overall, 'frame_gen', msg)
+                    progress_callback(overall, 'frame', msg)
             
             if progress_callback:
                 progress_callback(10, 'diffusion_start', f'开始扩散生成 ({diffusion_total} 步, {T} 帧)...')
@@ -329,9 +337,9 @@ class EchoMimicBackend:
                 fps=fps,
                 context_overlap=3,
                 audio_fea_final=audio_fea_final,  # 传入预计算的特征
-                callback=diffusion_step_callback if progress_callback else None,  # [中文注释] 扩散步骤回调
+                callback=make_pipeline_callback() if progress_callback else None,
                 callback_steps=1,
-                decode_callback=frame_decode_callback if progress_callback else None,  # [中文注释] 帧解码回调
+                frame_callback=frame_decode_callback if progress_callback else None,  # 帧解码进度回调 (中文注释)
             ).videos
 
             if progress_callback:

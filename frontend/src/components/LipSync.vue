@@ -33,7 +33,7 @@ const progressStages = ref<{ stage: string; label: string; percent: number }[]>(
   { stage: 'text_features', label: '文本特征提取', percent: 5 },
   { stage: 'diffusion_start', label: '扩散生成准备', percent: 10 },
   { stage: 'diffusion', label: '扩散模型推理', percent: 40 },
-  { stage: 'frame_gen', label: '帧解码生成', percent: 70 },
+  { stage: 'frame', label: '逐帧解码生成', percent: 70 },
   { stage: 'saving', label: '保存视频', percent: 95 },
   { stage: 'complete', label: '生成完成', percent: 100 },
 ])
@@ -42,10 +42,17 @@ const currentStageDetail = computed(() => {
   return found ? found.label : progressStage.value
 })
 
-// SSE handling
-let eventSource: EventSource | null = null
+// WebSocket handling
+let activeWebSocket: WebSocket | null = null
 
 const API_BASE_URL = ''
+
+// 根据当前页面协议确定 WebSocket 协议 (中文注释)
+const getWebSocketBaseUrl = () => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  // 在 CloudStudio 环境中，使用相同的 host 和 port
+  return `${protocol}//${window.location.host}`
+}
 
 const handleImageChange = (uploadFile: any) => {
   const file = uploadFile.raw
@@ -101,37 +108,46 @@ const handleWheel = (event: WheelEvent) => {
   imageScale.value = Math.min(Math.max(imageScale.value + delta, IMAGE_MIN_SCALE), IMAGE_MAX_SCALE)
 }
 
-// ===== SSE Progress Helpers =====
+// ===== WebSocket Progress Helpers =====
 const resetProgress = () => {
   progressPercent.value = 0
   progressStage.value = ''
   progressMessage.value = ''
 }
 
-const updateProgressFromSSE = (data: any) => {
-  console.log('[Debug Frontend] 收到SSE事件:', JSON.stringify(data))
+const closeWebSocket = () => {
+  if (activeWebSocket) {
+    console.log('[DEBUG][WS Client] 关闭现有 WebSocket 连接')
+    activeWebSocket.onmessage = null
+    activeWebSocket.onerror = null
+    activeWebSocket.onclose = null
+    activeWebSocket.close()
+    activeWebSocket = null
+  }
+}
+
+const updateProgressFromWS = (data: any) => {
+  console.log('[DEBUG][WS Client] 收到消息:', JSON.stringify(data))
   if (data.type === 'progress') {
     progressPercent.value = Math.round(data.percent)
     progressStage.value = data.stage
     progressMessage.value = data.message
-    console.log(`[Debug Frontend] 更新进度: ${Math.round(data.percent)}%, stage=${data.stage}, msg=${data.message}`)
+    console.log(`[DEBUG][WS Client] 进度更新: percent=${data.percent}%, stage=${data.stage}, msg=${data.message}`)
   } else if (data.type === 'complete') {
     progressPercent.value = 100
     progressStage.value = 'complete'
     progressMessage.value = '生成完成!'
     videoUrl.value = `${API_BASE_URL}${data.video_url}`
-    console.log('[Debug Frontend] 生成完成:', data.video_url)
+    console.log(`[DEBUG][WS Client] 任务完成: video_url=${data.video_url}`)
     ElMessage.success('视频生成成功!')
     fetchProjects()
+    isGenerating.value = false
   } else if (data.type === 'error') {
     errorMsg.value = data.message
-    console.error('[Debug Frontend] SSE错误:', data.message)
+    console.log(`[DEBUG][WS Client] 任务出错: ${data.message}`)
     ElMessage.error(data.message)
     isGenerating.value = false
     resetProgress()
-  } else if (data.type === 'done') {
-    console.log('[Debug Frontend] SSE流结束')
-    isGenerating.value = false
   }
 }
 
@@ -149,14 +165,18 @@ const generateVideo = async () => {
   errorMsg.value = null
   videoUrl.value = null
   resetProgress()
+  
+  // 关闭之前的 WebSocket 连接 (中文注释)
+  closeWebSocket()
 
   const formData = new FormData()
   formData.append('text', textInput.value)
   formData.append('image', selectedImage.value)
 
   try {
-    // Use SSE streaming endpoint
-    const response = await fetch(`${API_BASE_URL}/generate-stream`, {
+    // Step 1: 通过 HTTP POST 上传图片并创建任务，获取 task_id (中文注释)
+    console.log('[DEBUG][WS Client] 开始上传图片并创建任务...')
+    const response = await fetch(`${API_BASE_URL}/generate-ws`, {
       method: 'POST',
       body: formData,
     })
@@ -165,67 +185,60 @@ const generateVideo = async () => {
       throw new Error(`Server error: ${response.status}`)
     }
 
-    const reader = response.body?.getReader()
-    if (!reader) {
-      throw new Error('No response body reader available')
+    const result = await response.json()
+    if (!result.success || !result.task_id) {
+      throw new Error('创建任务失败: ' + (result.message || result.detail || '未知错误'))
     }
 
-    const decoder = new TextDecoder()
-    let buffer = ''
+    const taskId = result.task_id
+    console.log(`[DEBUG][WS Client] 任务已创建: task_id=${taskId.substring(0, 8)}...`)
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      
-      // Parse SSE events
-      const lines = buffer.split('\n')
-      buffer = '' // reset, we'll reconstruct
-      
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]
-        if (line.startsWith('data: ')) {
-          const jsonStr = line.slice(6)
-          try {
-            const data = JSON.parse(jsonStr)
-            updateProgressFromSSE(data)
-          } catch (e) {
-            console.warn('Failed to parse SSE data:', jsonStr)
-          }
-        } else if (line !== '') {
-          // Keep non-empty non-data lines in buffer (might be part of next event)
-          buffer += line + '\n'
-        }
+    // Step 2: 建立 WebSocket 连接接收实时进度 (中文注释)
+    const wsUrl = `${getWebSocketBaseUrl()}/ws/${taskId}`
+    console.log(`[DEBUG][WS Client] 正在连接 WebSocket: ${wsUrl}`)
+    
+    activeWebSocket = new WebSocket(wsUrl)
+    
+    activeWebSocket.onopen = () => {
+      console.log(`[DEBUG][WS Client] WebSocket 已连接: task=${taskId.substring(0, 8)}`)
+    }
+    
+    activeWebSocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        updateProgressFromWS(data)
+      } catch (e) {
+        console.warn('[DEBUG][WS Client] 无法解析 WebSocket 消息:', event.data)
       }
     }
-
-    // Handle any remaining buffer
-    if (buffer.trim()) {
-      const lines = buffer.split('\n')
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            updateProgressFromSSE(data)
-          } catch (e) {
-            // ignore
-          }
-        }
+    
+    activeWebSocket.onerror = (event) => {
+      console.error('[DEBUG][WS Client] WebSocket 错误:', event)
+      const msg = 'WebSocket 连接错误，请确认后端是否运行中.'
+      errorMsg.value = msg
+      ElMessage.error(msg)
+      isGenerating.value = false
+    }
+    
+    activeWebSocket.onclose = (event) => {
+      console.log(`[DEBUG][WS Client] WebSocket 已关闭: code=${event.code}, reason=${event.reason}`)
+      if (isGenerating.value) {
+        // 如果任务仍显示为进行中，说明连接被意外关闭
+        isGenerating.value = false
       }
+      activeWebSocket = null
     }
 
   } catch (err) {
     const msg = '连接后端出错，请确认后端是否运行中.'
     errorMsg.value = msg
     ElMessage.error(msg)
-    console.error(err)
-  } finally {
+    console.error('[DEBUG][WS Client] 错误:', err)
     isGenerating.value = false
   }
 }
 
-// Fallback to old API if SSE fails
+// Fallback to old API if WebSocket fails
 const generateVideoFallback = async () => {
   const formData = new FormData()
   formData.append('text', textInput.value)
@@ -448,7 +461,7 @@ onUnmounted(() => {
                       'pending': progressPercent < stage.percent
                     }"
                     :style="{ 
-                      flex: 1,
+                      flex: progressStages.length === 7 ? 1 : 'auto',
                       minWidth: '8px'
                     }"
                   >

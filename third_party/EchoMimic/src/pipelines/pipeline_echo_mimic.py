@@ -112,17 +112,23 @@ class Audio2VideoPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    def decode_latents(self, latents, decode_callback=None):
+    def decode_latents(self, latents, frame_callback=None):
+        """解码潜在表示为视频帧
+        参数:
+            latents: 潜在表示张量
+            frame_callback: 可选的帧进度回调函数 callback(frame_idx, total_frames)
+                           用于向 WebSocket 前端推送帧生成进度 (中文注释)
+        """
         video_length = latents.shape[2]
+        total_frames = latents.shape[2]  # 帧总数用于进度计算 (中文注释)
         latents = 1 / 0.18215 * latents
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         video = []
-        total_frames = latents.shape[0]
-        # [中文注释] 逐帧解码VAE潜在表示，同时报告帧生成进度
-        for frame_idx in tqdm(range(total_frames)):
+        for frame_idx in tqdm(range(latents.shape[0])):
             video.append(self.vae.decode(latents[frame_idx : frame_idx + 1]).sample)
-            if decode_callback is not None:
-                decode_callback(frame_idx, total_frames)
+            # 每解码一帧就调用回调以更新帧生成进度 (中文注释)
+            if frame_callback is not None:
+                frame_callback(frame_idx, total_frames)
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
@@ -366,7 +372,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
         fps=25,
         audio_margin=2,
         audio_fea_final=None,
-        decode_callback=None,  # [中文注释] 帧解码进度回调 (frame_idx, total_frames)
+        frame_callback=None,  # 帧解码进度回调 callback(frame_idx, total_frames) (中文注释)
         **kwargs,
     ):
         # Default height and width to unet
@@ -537,11 +543,6 @@ class Audio2VideoPipeline(DiffusionPipeline):
                     (t_i + 1) > num_warmup_steps and (t_i + 1) % self.scheduler.order == 0
                 ):
                     progress_bar.update()
-                
-                # [中文注释] 在每个扩散步骤结束时调用外部回调，用于报告进度
-                if callback is not None and ((t_i + 1) % callback_steps == 0 or t_i == len(timesteps) - 1):
-                    callback(self, t_i, t, {})
-                    print(f"[Debug Pipeline] 扩散步骤 {t_i+1}/{len(timesteps)} 完成")
 
             reference_control_reader.clear()
             reference_control_writer.clear()
@@ -549,8 +550,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
         if interpolation_factor > 0:
             latents = self.interpolate_latents(latents, interpolation_factor, device)
         # Post-processing
-        # [中文注释] 传入decode_callback以便在帧解码时报告进度
-        images = self.decode_latents(latents, decode_callback=decode_callback)  # (b, c, f, h, w)
+        images = self.decode_latents(latents, frame_callback=frame_callback)  # (b, c, f, h, w) 传递帧解码回调 (中文注释)
 
         # Convert to tensor
         if output_type == "tensor":
