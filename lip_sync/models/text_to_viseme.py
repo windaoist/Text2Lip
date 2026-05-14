@@ -23,8 +23,8 @@ class TextToVisemeProcessor:
         self.phoneme_to_viseme = {
             'SIL': 0, 'SP': 0,
             'AA': 1, 'AO': 1, 'AH': 1,
-            'AE': 2, 'EH': 2, 'IH': 2, 'IY': 2,
-            'AW': 3, 'OW': 3, 'UW': 3, 'UH': 3,
+            'AE': 2, 'EH': 2, 'IH': 2, 'IY': 2, 'EY': 2,
+            'AW': 3, 'OW': 3, 'UW': 3, 'UH': 3, 'AY': 3, 'OY': 3,
             'ER': 4,
             'P': 5, 'B': 5, 'M': 5,
             'F': 6, 'V': 6,

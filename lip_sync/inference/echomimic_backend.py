@@ -271,7 +271,12 @@ class EchoMimicBackend:
             if progress_callback:
                 progress_callback(5, 'text_features', '正在提取文本特征...')
                 
-            text_features = self.text_model(viseme_ids, target_frames_len=target_frames_len)  # (1, T, 19200)
+            # Pass zero FAU signals to match training distribution
+            # (the fau_projection Linear layer has a bias, so None ≠ zeros)
+            zero_fau = torch.zeros(1, target_frames_len, 16, device=self.device, dtype=self.weight_dtype)
+            text_features = self.text_model(
+                viseme_ids, target_frames_len=target_frames_len, fau_signals=zero_fau
+            )  # (1, T, 19200)
             
             if progress_callback:
                 progress_callback(10, 'text_features', '文本特征提取完成，准备生成视频...')

@@ -155,20 +155,21 @@ class PretrainedSyncNet(nn.Module):
             v_window = video_frames[:, i:i+window_size, :, :, :]
             # Resize to 96x96 (Wav2Lip expectation) using interpolate
 
-            # .view() 改为 .reshape()
             v_window_flat = v_window.reshape(B * window_size, C, H, W)
 
-            # 1. 先缩放到 96x96 (全脸)
-            v_window_resized = F.interpolate(v_window_flat, size=(
-                96, 96), mode='bilinear', align_corners=False)
+            # Wav2Lip style: first crop lower half (H//2:), then resize to 96x96
+            # Input: 64x64 -> crop to 32:64 (lower half: 32x64) -> resize to 96x96
+            half_h = H // 2
+            v_window_cropped = v_window_flat[:, :, half_h:, :]  # (B*5, 3, 32, 64)
+            v_window_resized = F.interpolate(
+                v_window_cropped, size=(96, 96),
+                mode='bilinear', align_corners=False
+            )  # (B*5, 3, 96, 96)
 
-            # 2. 截取下半脸区域 (Height 取 48:96)，变成 48x96 尺寸
-            v_window_cropped = v_window_resized[:, :, 48:, :]
+            v_window_resized = v_window_resized.reshape(
+                B, window_size, C, 96, 96)
 
-            v_window_cropped = v_window_cropped.reshape(
-                B, window_size, C, 48, 96)
-
-            # 3. Prepare audio window
+            # Prepare audio window
             # SyncNet expects the audio corresponding to the center frame of the video window
             center_idx = i + window_size // 2
             a_center = audio_features[:, center_idx, :]  # (B, 19200)
@@ -177,9 +178,9 @@ class PretrainedSyncNet(nn.Module):
             a_projected = self.audio_adapter(a_center)  # (B, 80 * 16)
             a_input = a_projected.view(B, 1, 80, 16)
 
-            # 4. 调整维度送入 SyncNet，注意此时 Height 是 48
-            v_input = v_window_cropped.permute(
-                0, 2, 1, 3, 4).contiguous().view(B, C * window_size, 48, 96)
+            # Format for SyncNet: (B, C*5, 96, 96)
+            v_input = v_window_resized.permute(
+                0, 2, 1, 3, 4).contiguous().view(B, C * window_size, 96, 96)
             # 3. Get embeddings
             a_emb, v_emb = self.syncnet(a_input, v_input)
 

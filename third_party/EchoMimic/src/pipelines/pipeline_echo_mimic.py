@@ -410,7 +410,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
             audio_fea_final = torch.Tensor(whisper_chunks).to(dtype=self.vae.dtype, device=self.vae.device)
             audio_fea_final = audio_fea_final.unsqueeze(0)
 
-        print("audio_fea_final:", audio_fea_final.shape)
+        # audio_fea_final shape logging removed (was debugging print)
         audio_frame_num = audio_fea_final.shape[1]
         video_length = min(video_length, audio_frame_num)
         if video_length < audio_frame_num:
@@ -458,9 +458,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
                 context_overlap,
             )
         )
-        print("ref_image_latents shape:", ref_image_latents.shape)
-        print("face_mask_tensor shape:", face_mask_tensor.shape)
-        print("face_locator_tensor shape:", face_locator_tensor.shape)
+        # debug shape prints removed
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for t_i, t in enumerate(timesteps):
                 noise_pred = torch.zeros(
@@ -543,6 +541,13 @@ class Audio2VideoPipeline(DiffusionPipeline):
                     (t_i + 1) > num_warmup_steps and (t_i + 1) % self.scheduler.order == 0
                 ):
                     progress_bar.update()
+                    # 调用扩散步骤回调以推送进度到 WebSocket 前端 (中文注释)
+                    if callback is not None and (t_i + 1) % callback_steps == 0:
+                        callback_kwargs = {}  # 占位，无额外数据需要传递 (中文注释)
+                        callback_kwargs = callback(self, t_i, t, callback_kwargs)
+                        if callback_kwargs is not None:
+                            # 如果回调返回了数据，后续可以传递给下一步 (中文注释)
+                            pass
 
             reference_control_reader.clear()
             reference_control_writer.clear()
@@ -584,11 +589,9 @@ class Audio2VideoPipeline(DiffusionPipeline):
 
         # 对除了两端帧外的所有帧应用conv1d
         internal_frames = F.conv1d(tensor_moved, weight_kernel)
-        print("tensor:", tensor.shape)
 
         # 重新整理输出形状为 (B, F, C, W, H)
         internal_frames = rearrange(internal_frames, "b (c h w) f -> b c f h w", c=c, h=h, w=w)
-        print("internal_frames:", internal_frames.shape)
         # 将第一帧和最后一帧保持不变，合并结果
         # 首帧 tensor[:, :, 0:1, :, :], 中间帧 internal_frames[:, :, 1:-1, :, :], 最后帧 tensor[:, :, -1:, :, :]
         smoothed_tensor = torch.cat(

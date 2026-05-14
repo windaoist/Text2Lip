@@ -259,10 +259,16 @@ def train():
 
     # ─── Mixed Precision (AMP) ───
     use_amp = device.type == "cuda"
-    if use_amp:
-        scaler = torch.amp.GradScaler('cuda')
-    else:
+    try:
+        if use_amp:
+            scaler = torch.amp.GradScaler('cuda')
+        else:
+            # Plain GradScaler with amp disabled for CPU or non-CUDA devices
+            scaler = torch.cuda.amp.GradScaler(enabled=False)
+    except (AttributeError, RuntimeError):
+        # Fallback for environments where torch.cuda.amp is unavailable
         scaler = torch.cuda.amp.GradScaler(enabled=False)
+        use_amp = False
 
     # ─── Training Loop ───
     epochs = args.epochs

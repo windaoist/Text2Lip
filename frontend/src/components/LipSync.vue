@@ -450,24 +450,6 @@ onUnmounted(() => {
                   <span v-if="progressMessage && progressMessage !== currentStageDetail" class="stage-message"> — {{ progressMessage }}</span>
                 </p>
                 <!-- Mini progress bar for stages context -->
-                <div class="stage-progress-bar">
-                  <div 
-                    v-for="(stage, idx) in progressStages" 
-                    :key="stage.stage"
-                    class="stage-segment"
-                    :class="{ 
-                      'completed': progressPercent >= stage.percent && stage.percent > 0,
-                      'current': progressStage === stage.stage,
-                      'pending': progressPercent < stage.percent
-                    }"
-                    :style="{ 
-                      flex: progressStages.length === 7 ? 1 : 'auto',
-                      minWidth: '8px'
-                    }"
-                  >
-                    <div class="segment-inner"></div>
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -744,44 +726,6 @@ onUnmounted(() => {
 .stage-message {
   color: #909399;
   font-size: 13px;
-}
-
-.stage-progress-bar {
-  display: flex;
-  gap: 2px;
-  height: 6px;
-  border-radius: 3px;
-  overflow: hidden;
-  background: #ebeef5;
-}
-
-.stage-segment {
-  flex: 1;
-  transition: all 0.3s ease;
-}
-
-.segment-inner {
-  height: 100%;
-  border-radius: 3px;
-  transition: background-color 0.3s ease, opacity 0.3s ease;
-}
-
-.stage-segment.completed .segment-inner {
-  background-color: #67c23a;
-}
-
-.stage-segment.current .segment-inner {
-  background-color: #409eff;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.stage-segment.pending .segment-inner {
-  background-color: #ebeef5;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
 }
 
 .video-wrapper {
