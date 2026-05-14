@@ -1,9 +1,24 @@
+from pathlib import Path
+from diffusers import AutoencoderKL, DDIMScheduler
+from omegaconf import OmegaConf
+from PIL import Image
+import cv2
+import numpy as np
+import torch
+from facenet_pytorch import MTCNN
+from src.utils.util import save_videos_grid, crop_and_pad
+from src.models.face_locator import FaceLocator
+from src.pipelines.pipeline_echo_mimic import Audio2VideoPipeline
+from src.models.whisper.audio2feature import load_audio_model
+from src.models.unet_3d_echo import EchoUNet3DConditionModel
+from src.models.unet_2d_condition import UNet2DConditionModel
 import os
 import sys
 
 # 将项目根目录和 EchoMimic 添加到 Python 路径
 # 必须在导入 src.xxx 之前完成
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))
 ECHOMIMIC_ROOT = os.path.join(PROJECT_ROOT, "third_party", "EchoMimic")
 
 if PROJECT_ROOT not in sys.path:
@@ -11,20 +26,6 @@ if PROJECT_ROOT not in sys.path:
 if ECHOMIMIC_ROOT not in sys.path:
     sys.path.insert(0, ECHOMIMIC_ROOT)  # 优先使用 EchoMimic 的 src
 
-from src.models.unet_2d_condition import UNet2DConditionModel
-from src.models.unet_3d_echo import EchoUNet3DConditionModel
-from src.models.whisper.audio2feature import load_audio_model
-from src.pipelines.pipeline_echo_mimic import Audio2VideoPipeline
-from src.models.face_locator import FaceLocator
-from src.utils.util import save_videos_grid, crop_and_pad
-from facenet_pytorch import MTCNN
-import torch
-import numpy as np
-import cv2
-from PIL import Image
-from omegaconf import OmegaConf
-from diffusers import AutoencoderKL, DDIMScheduler
-from pathlib import Path
 
 # ==============================================================================
 # 解决 diffusers/peft 与不同版本 huggingface_hub/transformers 的兼容性问题
@@ -196,11 +197,11 @@ class EchoMimicBackend:
         from lip_sync.models.motion_gen import VisemeEncoder
         from lip_sync.models.text_to_viseme import TextToVisemeProcessor
         processor = TextToVisemeProcessor()
-        
+
         # 目标维度 19200 (EchoMimic Whisper Feature Chunk Size: 50 * 384 = 19200)
         self.text_model = VisemeEncoder(
-            num_visemes=processor.vocab_size, d_model=512, out_dim=19200).to(self.device)
-        
+            num_visemes=processor.vocab_size, d_model=512, out_dim=19200).to(device=self.device, dtype=self.weight_dtype)
+
         if os.path.exists(model_path):
             try:
                 self.text_model.load_state_dict(
@@ -228,7 +229,7 @@ class EchoMimicBackend:
         # 1. 预处理参考图像 (人脸检测与裁剪)
         if progress_callback:
             progress_callback(0, 'preprocess', '正在预处理参考图像...')
-        
+
         face_img = cv2.imread(ref_image_path)
         face_mask = np.zeros(
             (face_img.shape[0], face_img.shape[1])).astype('uint8')
@@ -262,69 +263,74 @@ class EchoMimicBackend:
         with torch.no_grad():
             # 2. 文本 -> 视素 -> 特征
             if viseme_ids.dim() == 1:
-                viseme_ids = viseme_ids.unsqueeze(0) # (1, N)
+                viseme_ids = viseme_ids.unsqueeze(0)  # (1, N)
             viseme_ids = viseme_ids.to(self.device)
-            
+
             if target_frames_len is None:
                 target_frames_len = viseme_ids.shape[1] * 8
-            
+
             if progress_callback:
                 progress_callback(5, 'text_features', '正在提取文本特征...')
-                
+
             # Pass zero FAU signals to match training distribution
             # (the fau_projection Linear layer has a bias, so None ≠ zeros)
-            zero_fau = torch.zeros(1, target_frames_len, 16, device=self.device, dtype=self.weight_dtype)
+            zero_fau = torch.zeros(
+                1, target_frames_len, 16, device=self.device, dtype=self.weight_dtype)
             text_features = self.text_model(
                 viseme_ids, target_frames_len=target_frames_len, fau_signals=zero_fau
             )  # (1, T, 19200)
-            
+
             if progress_callback:
                 progress_callback(10, 'text_features', '文本特征提取完成，准备生成视频...')
 
             # 3. 映射到 EchoMimic 期望的维度 (1, T, 50, 384)
             T = text_features.shape[1]
-            audio_fea_final = text_features.view(1, T, 50, 384).to(dtype=self.weight_dtype)
+            audio_fea_final = text_features.view(
+                1, T, 50, 384).to(dtype=self.weight_dtype)
 
             # 4. 自定义 pipeline callback 来跟踪扩散步骤进度和帧生成进度
             diffusion_total = steps  # e.g. 30
             frames_total = T       # e.g. 132
-            # 用于帧解码进度的可修改容器 (中文注释)
+            # 用于帧解码进度的可修改容器
             frame_decode_count = [0]
-            # 扩散进度百分比的上限: 扩散结束后进度为70% (中文注释)
+            # 扩散进度百分比的上限: 扩散结束后进度为70%
             DIFFUSION_END_PERCENT = 70
-            
+
             # 扩散步骤回调 (10% ~ 70%)
             def make_pipeline_callback():
                 pipe_step_count = [0]
-                
+
                 def callback(pipe, step_index, timestep, callback_kwargs):
                     nonlocal pipe_step_count
                     pipe_step_count[0] += 1
-                    
+
                     # 扩散步骤进度 (10% ~ 70%)
-                    diffusion_progress = (pipe_step_count[0] / diffusion_total) * (DIFFUSION_END_PERCENT - 10)
+                    diffusion_progress = (
+                        pipe_step_count[0] / diffusion_total) * (DIFFUSION_END_PERCENT - 10)
                     overall = 10 + diffusion_progress
-                    
+
                     msg = f'扩散步骤 {pipe_step_count[0]}/{diffusion_total}'
                     if progress_callback:
                         progress_callback(overall, 'diffusion', msg)
-                    
+
                     return callback_kwargs
                 return callback
-            
-            # 帧解码回调 (70% ~ 95%) 由 pipeline 的 decode_latents 逐帧调用 (中文注释)
+
+            # 帧解码回调 (70% ~ 95%) 由 pipeline 的 decode_latents 逐帧调用
             def frame_decode_callback(frame_idx, total_frames):
                 frame_decode_count[0] = frame_idx + 1
                 # 帧解码进度: 70% ~ 95%
-                frame_progress = (frame_decode_count[0] / total_frames) * (95 - DIFFUSION_END_PERCENT)
+                frame_progress = (
+                    frame_decode_count[0] / total_frames) * (95 - DIFFUSION_END_PERCENT)
                 overall = DIFFUSION_END_PERCENT + frame_progress
                 msg = f'正在生成视频帧 {frame_decode_count[0]}/{total_frames}'
                 if progress_callback:
                     progress_callback(overall, 'frame', msg)
-            
+
             if progress_callback:
-                progress_callback(10, 'diffusion_start', f'开始扩散生成 ({diffusion_total} 步, {T} 帧)...')
-            
+                progress_callback(10, 'diffusion_start',
+                                  f'开始扩散生成 ({diffusion_total} 步, {T} 帧)...')
+
             print(f"[*] 正在从文本特征生成视频 (帧数: {T})...")
 
             video = self.pipe(
@@ -344,7 +350,7 @@ class EchoMimicBackend:
                 audio_fea_final=audio_fea_final,  # 传入预计算的特征
                 callback=make_pipeline_callback() if progress_callback else None,
                 callback_steps=1,
-                frame_callback=frame_decode_callback if progress_callback else None,  # 帧解码进度回调 (中文注释)
+                frame_callback=frame_decode_callback if progress_callback else None,  # 帧解码进度回调
             ).videos
 
             if progress_callback:
@@ -354,10 +360,10 @@ class EchoMimicBackend:
             save_videos_grid(final_video, output_path, fps=fps)
 
             print(f"[*] 文本驱动视频生成完成: {output_path}")
-            
+
             if progress_callback:
                 progress_callback(100, 'complete', '视频生成完成!')
-                
+
             return output_path
 
     def _select_face(self, det_bboxes, probs):

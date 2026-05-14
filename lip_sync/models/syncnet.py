@@ -133,6 +133,13 @@ class PretrainedSyncNet(nn.Module):
             nn.ReLU(),
             nn.Linear(1024, 80 * 16)
         )
+        # Wav2Lip face encoder outputs different dimensions depending on input resolution.
+        # With 96x96 lower-half input, it outputs 2048 (512 * 4 * 1).
+        # With classic 96x96 full face (48x96 lower-half resized), it outputs 512.
+        # This adapter normalizes the face embedding to 512 for cosine similarity.
+        self.face_adapter = nn.Sequential(
+            nn.Linear(2048, 512),
+        )
 
     def forward(self, video_frames, audio_features):
         """
@@ -183,6 +190,9 @@ class PretrainedSyncNet(nn.Module):
                 0, 2, 1, 3, 4).contiguous().view(B, C * window_size, 96, 96)
             # 3. Get embeddings
             a_emb, v_emb = self.syncnet(a_input, v_input)
+
+            # Project face embedding from 2048 → 512 to match audio embedding dim
+            v_emb = self.face_adapter(v_emb)
 
             # 4. Compute contrastive loss (maximize cosine similarity for matching pair)
             similarity = F.cosine_similarity(v_emb, a_emb)

@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -244,13 +245,14 @@ def train():
     print(f"[*] Gradient accumulation steps: {args.accum_steps}")
     print(f"[*] Effective batch size: {args.batch_size * args.accum_steps}")
     print(f"[*] Steps per epoch: {steps_per_epoch}")
-    print(f"[*] Effective steps per epoch: {steps_per_epoch // args.accum_steps}")
+    effective_steps = math.ceil(steps_per_epoch / args.accum_steps) if args.accum_steps > 1 else steps_per_epoch
+    print(f"[*] Effective steps per epoch: {effective_steps}")
 
     # ─── Learning Rate Scheduler ───
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=[args.max_lr, args.max_lr, args.max_lr * 0.5],
-        steps_per_epoch=steps_per_epoch // args.accum_steps if args.accum_steps > 1 else steps_per_epoch,
+        steps_per_epoch=effective_steps,
         epochs=args.epochs,
         pct_start=0.1,
         div_factor=25.0,
@@ -360,7 +362,7 @@ def train():
                     scheduler = torch.optim.lr_scheduler.OneCycleLR(
                         optimizer,
                         max_lr=[args.max_lr, args.max_lr, args.max_lr * 0.5],
-                        steps_per_epoch=steps_per_epoch // args.accum_steps if args.accum_steps > 1 else steps_per_epoch,
+                        steps_per_epoch=effective_steps,
                         epochs=args.epochs,
                         pct_start=0.1,
                         div_factor=25.0,

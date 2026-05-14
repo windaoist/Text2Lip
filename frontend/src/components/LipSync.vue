@@ -47,7 +47,7 @@ let activeWebSocket: WebSocket | null = null
 
 const API_BASE_URL = ''
 
-// 根据当前页面协议确定 WebSocket 协议 (中文注释)
+// 根据当前页面协议确定 WebSocket 协议 
 const getWebSocketBaseUrl = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   // 在 CloudStudio 环境中，使用相同的 host 和 port
@@ -166,7 +166,7 @@ const generateVideo = async () => {
   videoUrl.value = null
   resetProgress()
   
-  // 关闭之前的 WebSocket 连接 (中文注释)
+  // 关闭之前的 WebSocket 连接 
   closeWebSocket()
 
   const formData = new FormData()
@@ -174,7 +174,7 @@ const generateVideo = async () => {
   formData.append('image', selectedImage.value)
 
   try {
-    // Step 1: 通过 HTTP POST 上传图片并创建任务，获取 task_id (中文注释)
+    // Step 1: 通过 HTTP POST 上传图片并创建任务，获取 task_id 
     console.log('[DEBUG][WS Client] 开始上传图片并创建任务...')
     const response = await fetch(`${API_BASE_URL}/generate-ws`, {
       method: 'POST',
@@ -193,7 +193,7 @@ const generateVideo = async () => {
     const taskId = result.task_id
     console.log(`[DEBUG][WS Client] 任务已创建: task_id=${taskId.substring(0, 8)}...`)
 
-    // Step 2: 建立 WebSocket 连接接收实时进度 (中文注释)
+    // Step 2: 建立 WebSocket 连接接收实时进度 
     const wsUrl = `${getWebSocketBaseUrl()}/ws/${taskId}`
     console.log(`[DEBUG][WS Client] 正在连接 WebSocket: ${wsUrl}`)
     

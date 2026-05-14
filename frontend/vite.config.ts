@@ -12,7 +12,7 @@ export default defineConfig({
       '/outputs': { target: 'http://localhost:8000', changeOrigin: true },
       '/generate-stream': { target: 'http://localhost:8000', changeOrigin: true },
       '/generate-ws': { target: 'http://localhost:8000', changeOrigin: true },
-      // WebSocket 代理: 前端 ws://host:5173/ws/xxx → 后端 ws://localhost:8000/ws/xxx (中文注释)
+      // WebSocket 代理: 前端 ws://host:5173/ws/xxx → 后端 ws://localhost:8000/ws/xxx 
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,

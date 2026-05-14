@@ -22,11 +22,9 @@ pretrained_weights/
 
 # Generated output
 output/
-
+loss
 # Training logs and temp files
-loss.txt
-loss2.txt
-123.txt
+
 temp_prototype_audio.wav
 
 # IDE
