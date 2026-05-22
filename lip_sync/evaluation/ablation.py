@@ -27,8 +27,8 @@ class AblationType(Enum):
     NO_CROSS_ATTN = "no_cross_attn"   # 无交叉注意力
     NO_FAU = "no_fau"                 # 无 FAU 微表情条件
     NO_POS_ENCODING = "no_pos_enc"    # 无位置编码
-    REDUCED_LAYERS = "reduced_layers" # 减少 Transformer 层数
-    NO_TRANSFORMER = "no_transformer" # 无自注意力编码器，直接映射
+    REDUCED_LAYERS = "reduced_layers"  # 减少 Transformer 层数
+    NO_TRANSFORMER = "no_transformer"  # 无自注意力编码器，直接映射
 
 
 ABLATION_DESCRIPTIONS = {
@@ -83,7 +83,8 @@ class AblationConfig:
         if not self.use_positional_encoding:
             parts.append("无位置编码")
         if self.num_encoder_layers != 4 or self.num_decoder_layers != 2:
-            parts.append(f"减少层数(enc={self.num_encoder_layers},dec={self.num_decoder_layers})")
+            parts.append(
+                f"减少层数(enc={self.num_encoder_layers},dec={self.num_decoder_layers})")
         if not self.use_self_attention:
             parts.append("无自注意力")
         return "完整模型" if not parts else "消融: " + ", ".join(parts)
@@ -98,6 +99,7 @@ class DirectExpansionDecoder(nn.Module):
     用简单的线性投影 + 重复展开替代交叉注意力。
     将 N 个视素嵌入直接线性投影到 d_model，再重复到 T 帧。
     """
+
     def __init__(self, d_model: int):
         super().__init__()
         self.proj = nn.Linear(d_model, d_model)
@@ -133,6 +135,7 @@ def build_ablation_model(
     """
     # 深拷贝，避免影响原始模型（多次消融实验共享同一 base_model 时需要）
     base_model = copy.deepcopy(base_model)
+    device = next(base_model.parameters()).device
 
     # ── 消融：无自注意力编码器 ──
     if not cfg.use_self_attention:
@@ -153,11 +156,12 @@ def build_ablation_model(
         )
         base_model.transformer_encoder = nn.TransformerEncoder(
             new_encoder_layer, num_layers=cfg.num_encoder_layers,
-        )
+        ).to(device)
 
     # ── 消融：无交叉注意力（替换为 DirectExpansionDecoder） ──
     if not cfg.use_cross_attention:
-        base_model.transformer_decoder = DirectExpansionDecoder(d_model=base_model.d_model)
+        base_model.transformer_decoder = DirectExpansionDecoder(
+            d_model=base_model.d_model).to(device)
 
     # ── 消融：减少解码器层数（仅在仍使用交叉注意力时生效） ──
     if cfg.use_cross_attention and cfg.num_decoder_layers != 2:
@@ -170,7 +174,7 @@ def build_ablation_model(
         )
         base_model.transformer_decoder = nn.TransformerDecoder(
             new_decoder_layer, num_layers=cfg.num_decoder_layers,
-        )
+        ).to(device)
 
     # ── 消融：无 FAU（在 forward 中拦截） ──
     # FAU 条件是通过检查 fau_signals 是否为 None 来控制的。

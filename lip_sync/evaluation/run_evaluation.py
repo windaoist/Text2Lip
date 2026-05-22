@@ -16,6 +16,24 @@
     python -m lip_sync.evaluation.run_evaluation --mode full --eval-only
 """
 
+from lip_sync.evaluation.ablation import (
+    AblationConfig,
+    build_ablation_model,
+    get_default_ablation_experiments,
+)
+from lip_sync.evaluation.metrics import (
+    calculate_fid,
+    calculate_psnr,
+    calculate_ssim,
+    calculate_lmd,
+    extract_inception_features,
+    extract_lip_landmarks,
+    InceptionFeatureExtractor,
+    save_metrics_table,
+)
+from lip_sync.models.aux_renderer import AuxiliaryRenderer
+from lip_sync.models.motion_gen import VisemeEncoder
+from lip_sync.models.text_to_viseme import TextToVisemeProcessor
 import os
 import sys
 import argparse
@@ -31,25 +49,6 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-from lip_sync.models.text_to_viseme import TextToVisemeProcessor
-from lip_sync.models.motion_gen import VisemeEncoder
-from lip_sync.models.aux_renderer import AuxiliaryRenderer
-from lip_sync.evaluation.metrics import (
-    calculate_fid,
-    calculate_psnr,
-    calculate_ssim,
-    calculate_lmd,
-    extract_inception_features,
-    extract_lip_landmarks,
-    InceptionFeatureExtractor,
-    save_metrics_table,
-)
-from lip_sync.evaluation.ablation import (
-    AblationConfig,
-    build_ablation_model,
-    get_default_ablation_experiments,
-)
 
 
 @dataclass
@@ -84,7 +83,8 @@ class EvaluationRunner:
 
     def __init__(self, config: EvalConfig):
         self.config = config
-        self.device = torch.device(config.device if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(
+            config.device if torch.cuda.is_available() else "cpu")
         print(f"[*] 评测设备: {self.device}")
         if torch.cuda.is_available():
             print(f"[*] GPU: {torch.cuda.get_device_name(0)}")
@@ -108,7 +108,8 @@ class EvaluationRunner:
         if not data_dir.exists():
             raise FileNotFoundError(f"数据目录不存在: {data_dir}")
 
-        pt_files = sorted(data_dir.glob("*.pt")) or sorted(data_dir.rglob("*.pt"))
+        pt_files = sorted(data_dir.glob(
+            "*.pt")) or sorted(data_dir.rglob("*.pt"))
         if not pt_files:
             raise FileNotFoundError(f"在 {data_dir} 中未找到 .pt 文件")
 
@@ -137,7 +138,8 @@ class EvaluationRunner:
     def text_model(self) -> VisemeEncoder:
         if self._text_model is None:
             print("[*] 加载 VisemeEncoder...")
-            model = VisemeEncoder(num_visemes=self.processor.vocab_size, d_model=512, out_dim=19200)
+            model = VisemeEncoder(
+                num_visemes=self.processor.vocab_size, d_model=512, out_dim=19200)
             ckpt = self.config.text_model_weights
             if os.path.exists(ckpt):
                 model.load_state_dict(
@@ -159,7 +161,8 @@ class EvaluationRunner:
     @property
     def inception_extractor(self) -> InceptionFeatureExtractor:
         if self._inception_extractor is None:
-            self._inception_extractor = InceptionFeatureExtractor(device=self.device)
+            self._inception_extractor = InceptionFeatureExtractor(
+                device=self.device)
         return self._inception_extractor
 
     # ── fast 模式 ──
@@ -220,18 +223,24 @@ class EvaluationRunner:
             def make_abl_fn(cfg, model):
                 def fn(s, gt):
                     text, T = gt["text"], gt["whisper_features"].shape[0]
-                    ids = self.processor.process(text).unsqueeze(0).to(self.device)
+                    ids = self.processor.process(
+                        text).unsqueeze(0).to(self.device)
                     target_T = ids.shape[1] * 3 if not cfg.use_duration else T
                     fau = gt.get("fau_signals")
                     if fau is not None and cfg.use_fau:
                         fau = fau.unsqueeze(0).to(self.device)
+                        if fau.shape[1] != target_T:
+                            fau = torch.nn.functional.interpolate(
+                                fau.permute(0, 2, 1), size=target_T, mode='linear', align_corners=False
+                            ).permute(0, 2, 1)
                     else:
                         fau = None
                     return model(ids, target_frames_len=target_T, fau_signals=fau)
                 return fn
 
             results.update(self._run_fast_variant(
-                name, samples, gt_frames_all, real_feats, make_abl_fn(ablation_cfg, model_abl),
+                name, samples, gt_frames_all, real_feats, make_abl_fn(
+                    ablation_cfg, model_abl),
             ))
 
         return results
@@ -251,15 +260,20 @@ class EvaluationRunner:
         with torch.no_grad():
             for sidx, s in enumerate(samples):
                 gt = self._get_gt_data(s)
-                feats = feature_fn(s, gt)                         # (1, T, 19200)
-                pred = self.aux_renderer(feats)[0]                 # (T, 3, 64, 64)
+                # (1, T, 19200)
+                feats = feature_fn(s, gt)
+                feats = feats.to(self.device)                     # 确保在正确设备上
+                # (T, 3, 64, 64)
+                pred = self.aux_renderer(feats)[0]
 
                 T = min(pred.shape[0], gt["gt_frames"].shape[0])
-                gcrop, gt_crop = pred[:T], gt["gt_frames"][:T]
+                gcrop, gt_crop = pred[:T], gt["gt_frames"][:T].to(pred.device)
 
                 # 逐帧指标（每样本一个均值）
-                p = calculate_psnr(gcrop.unsqueeze(0), gt_crop.unsqueeze(0)).mean().item()
-                s = calculate_ssim(gcrop.unsqueeze(0), gt_crop.unsqueeze(0)).mean().item()
+                p = calculate_psnr(gcrop.unsqueeze(
+                    0), gt_crop.unsqueeze(0)).mean().item()
+                s = calculate_ssim(gcrop.unsqueeze(
+                    0), gt_crop.unsqueeze(0)).mean().item()
                 p_list.append(p)
                 s_list.append(s)
                 all_gen.append(gcrop)
@@ -275,12 +289,15 @@ class EvaluationRunner:
         )
         fid = calculate_fid(real_feats, gen_feats)
 
-        metrics = {"FID": fid, "PSNR": float(np.mean(p_list)), "SSIM": float(np.mean(s_list))}
+        metrics = {"FID": fid, "PSNR": float(
+            np.mean(p_list)), "SSIM": float(np.mean(s_list))}
         if lm_gen:
             lmd, lmd_std, valid = calculate_lmd(lm_gen, lm_gt)
-            metrics.update({"LMD": lmd, "LMD_std": lmd_std, "ValidRatio": valid})
+            metrics.update(
+                {"LMD": lmd, "LMD_std": lmd_std, "ValidRatio": valid})
 
-        print(f"  FID={fid:.4f}  PSNR={np.mean(p_list):.2f}  SSIM={np.mean(s_list):.4f}", end="")
+        print(
+            f"  FID={fid:.4f}  PSNR={np.mean(p_list):.2f}  SSIM={np.mean(s_list):.4f}", end="")
         if "LMD" in metrics:
             print(f"  LMD={metrics['LMD']:.4f}", end="")
         print()
@@ -400,7 +417,8 @@ class EvaluationRunner:
             ret, f = cap.read()
             if not ret:
                 break
-            frames.append(torch.from_numpy(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)).float().permute(2, 0, 1) / 127.5 - 1.0)
+            frames.append(torch.from_numpy(cv2.cvtColor(
+                f, cv2.COLOR_BGR2RGB)).float().permute(2, 0, 1) / 127.5 - 1.0)
         cap.release()
         return torch.stack(frames)
 
@@ -436,8 +454,10 @@ class EvaluationRunner:
         print("=" * 60)
 
         if self.results:
-            save_metrics_table(self.results, str(self.output_root / self.config.results_file))
-            save_metrics_table(self.results, str(self.output_root / "results.md"), fmt="markdown")
+            save_metrics_table(self.results, str(
+                self.output_root / self.config.results_file))
+            save_metrics_table(self.results, str(
+                self.output_root / "results.md"), fmt="markdown")
 
         return self.results
 
@@ -450,7 +470,8 @@ def main():
     p.add_argument("--test-split-ratio", type=float, default=0.1)
     p.add_argument("--eval-only", action="store_true", help="跳过生成，仅评测已有视频")
     p.add_argument("--data-dir", default="data/dataset/grid/preprocessed/s1")
-    p.add_argument("--weights", default="pretrained_weights/text_driven_model.pth")
+    p.add_argument(
+        "--weights", default="pretrained_weights/text_driven_model.pth")
     p.add_argument("--output", default="output/evaluation")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--no-lmd", action="store_true")

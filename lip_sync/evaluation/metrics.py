@@ -17,6 +17,7 @@ import warnings
 # FID — Fréchet Inception Distance
 # ============================================================================
 
+
 class InceptionFeatureExtractor(nn.Module):
     """使用预训练 Inception-v3 提取 2048 维特征用于 FID 计算。
 
@@ -62,10 +63,13 @@ class InceptionFeatureExtractor(nn.Module):
         x = x.to(self._device)
         # Inception 要求输入至少 299x299
         if x.shape[-1] != 299 or x.shape[-2] != 299:
-            x = F.interpolate(x, size=(299, 299), mode="bilinear", align_corners=False)
+            x = F.interpolate(x, size=(299, 299),
+                              mode="bilinear", align_corners=False)
         # 归一化到 Inception 期望的分布
-        mean = torch.tensor([0.485, 0.456, 0.406], device=self._device).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=self._device).view(1, 3, 1, 1)
+        mean = torch.tensor([0.485, 0.456, 0.406],
+                            device=self._device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225],
+                           device=self._device).view(1, 3, 1, 1)
         x = (x - mean) / std
         # 完整 forward，hook 会在 Mixed_7c 处捕获特征。
         # Inception3 的 fc 层会输出 (B, 1000) 但结果被忽略。
@@ -85,6 +89,7 @@ class InceptionFeatureExtractor(nn.Module):
 def _compute_fid_from_stats(mu1: np.ndarray, sigma1: np.ndarray,
                             mu2: np.ndarray, sigma2: np.ndarray) -> float:
     """给定两组统计量计算 FID。"""
+    from scipy.linalg import sqrtm
     diff = mu1 - mu2
     covmean, _ = sqrtm(sigma1.dot(sigma2), disp=False)
     # 处理数值误差
@@ -104,10 +109,10 @@ def calculate_fid(real_features: np.ndarray, gen_features: np.ndarray) -> float:
     Returns:
         FID 标量值（越低越好）
     """
-    from scipy.linalg import sqrtm
-
-    mu1, sigma1 = np.mean(real_features, axis=0), np.cov(real_features, rowvar=False)
-    mu2, sigma2 = np.mean(gen_features, axis=0), np.cov(gen_features, rowvar=False)
+    mu1, sigma1 = np.mean(real_features, axis=0), np.cov(
+        real_features, rowvar=False)
+    mu2, sigma2 = np.mean(gen_features, axis=0), np.cov(
+        gen_features, rowvar=False)
 
     return _compute_fid_from_stats(mu1, sigma1, mu2, sigma2)
 
@@ -290,7 +295,8 @@ def extract_lip_landmarks(
         frames_np = frames.detach().cpu()
         if frames_np.min() < -0.5:
             frames_np = (frames_np + 1.0) / 2.0
-        frames_np = (frames_np.clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).numpy()  # (T, H, W, 3)
+        frames_np = (frames_np.clamp(0, 1) * 255).byte().permute(0,
+                                                                 2, 3, 1).numpy()  # (T, H, W, 3)
     else:
         frames_np = frames
 
@@ -383,7 +389,8 @@ def calculate_syncnet_score(
     scores = []
     with torch.no_grad():
         for i in range(T - window_size + 1):
-            v_win = video_frames[:, i:i + window_size, :, :, :]  # (1, 5, C, H, W)
+            v_win = video_frames[:, i:i + window_size,
+                                 :, :, :]  # (1, 5, C, H, W)
             a_center = audio_features[:, i + window_size // 2, :]  # (1, 19200)
 
             B = 1
@@ -392,9 +399,12 @@ def calculate_syncnet_score(
             half_h = H // 2
             v_cropped = v_win[:, :, :, half_h:, :]  # (1, 5, C, H/2, W)
             v_flat = v_cropped.reshape(B * window_size, C, H // 2, W)
-            v_resized = F.interpolate(v_flat, size=(96, 96), mode="bilinear", align_corners=False)
-            v_input = v_resized.reshape(B, window_size, C, 96, 96).permute(0, 2, 1, 3, 4)
-            v_input = v_input.reshape(B, C * window_size, 96, 96)  # (1, 15, 96, 96)
+            v_resized = F.interpolate(v_flat, size=(
+                96, 96), mode="bilinear", align_corners=False)
+            v_input = v_resized.reshape(
+                B, window_size, C, 96, 96).permute(0, 2, 1, 3, 4)
+            v_input = v_input.reshape(
+                B, C * window_size, 96, 96)  # (1, 15, 96, 96)
 
             # 音频特征投影
             a_proj = syncnet_model.audio_adapter(a_center)  # (1, 80*16)
@@ -448,7 +458,8 @@ def preprocess_frames_for_fid(
 
     # resize
     if frames.shape[-1] != size:
-        frames = F.interpolate(frames, size=(size, size), mode="bilinear", align_corners=False)
+        frames = F.interpolate(frames, size=(size, size),
+                               mode="bilinear", align_corners=False)
 
     return frames.float()
 
@@ -472,7 +483,8 @@ def load_video_frames(video_path: str, max_frames: Optional[int] = None) -> torc
         if not ret:
             break
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # (H, W, 3)
-        frame_tensor = torch.from_numpy(frame_rgb).float().permute(2, 0, 1)  # (3, H, W)
+        frame_tensor = torch.from_numpy(
+            frame_rgb).float().permute(2, 0, 1)  # (3, H, W)
         frame_tensor = frame_tensor / 127.5 - 1.0  # [0, 255] → [-1, 1]
         frames.append(frame_tensor)
         if max_frames and len(frames) >= max_frames:
@@ -509,7 +521,8 @@ def save_metrics_table(
     df.index.name = "Method"
 
     # 重新排列列顺序
-    preferred_order = ["FID", "PSNR", "SSIM", "LMD", "LMD_std", "ValidRatio", "SyncNet"]
+    preferred_order = ["FID", "PSNR", "SSIM",
+                       "LMD", "LMD_std", "ValidRatio", "SyncNet"]
     available_cols = [c for c in preferred_order if c in df.columns]
     extra_cols = [c for c in df.columns if c not in preferred_order]
     df = df[available_cols + extra_cols]
