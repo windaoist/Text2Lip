@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(latexmk -synctex=1 -pdfxe -shell-escape -interaction=nonstopmode -file-line-error -outdir=tmp Thesis.tex)",
+      "Bash(pdfinfo Thesis.pdf)",
+      "Bash(pdfinfo tmp/Thesis.pdf)",
+      "mcp__ide__executeCode"
+    ]
+  }
+}

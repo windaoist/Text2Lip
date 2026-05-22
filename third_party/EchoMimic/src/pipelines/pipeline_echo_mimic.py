@@ -563,7 +563,7 @@ class Audio2VideoPipeline(DiffusionPipeline):
                     progress_bar.update()
                     # 调用扩散步骤回调以推送进度到 WebSocket 前端
                     if callback is not None and (t_i + 1) % callback_steps == 0:
-                        callback_kwargs = {}  # 占位，无额外数据需要传递
+                        callback_kwargs = {}
                         callback_kwargs = callback(
                             self, t_i, t, callback_kwargs)
                         if callback_kwargs is not None:

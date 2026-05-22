@@ -1,6 +1,7 @@
 # Text2Lip — 纯文本驱动的唇动视频生成
 
 > 本项目实现了 **文本 → 视素(Viseme) → 唇动视频** 的端到端纯文本驱动流水线，无需任何音频输入。
+> 配套提供完整 Web 应用（FastAPI 后端 + Vue 3 前端），支持交互式使用与实时进度反馈。
 
 ---
 
@@ -194,38 +195,44 @@
 
 ---
 
-## 项目结构
+## Web 应用
 
-```
-├── lip_sync/                         # 核心代码
-│   ├── inference_pipeline.py         # 端到端推理流水线入口
-│   ├── models/
-│   │   ├── text_to_viseme.py         # Step 1: 文本→视素（G2P + 音素时长预测）
-│   │   ├── motion_gen.py             # Step 2: 视素→运动特征（Transformer + Cross-Attention）
-│   │   ├── aux_renderer.py           # 辅助解码器（训练用，特征→低分辨率帧）
-│   │   ├── syncnet.py                # SyncNet 同步损失计算（训练用）
-│   ├── train/
-│   │   └── train_text_to_feature.py  # 训练脚本（MSE+LPIPS+SyncNet联合损失）
-│   ├── inference/
-│   │   └── echomimic_backend.py     # Step 3: EchoMimic 视频生成后端
-│   └── data_utils/
-│       └── preprocess_grid.py        # GRID 数据集预处理（多进程加速）
-├── configs/
-│   ├── text_driven_config.yaml       # 训练/推理配置文件
-│   ├── inference/                    # EchoMimic 推理配置
-│   └── prompts/                      # EchoMimic prompt 配置
-├── backend_server.py                 # FastAPI 后端服务（支持 SSE/WebSocket 进度推送）
-├── frontend/                         # Vue 3 + Element Plus 前端
-│   └── src/components/LipSync.vue
-├── train_and_gen.ipynb               # Colab 训练与生成笔记
-├── third_party/EchoMimic/            # EchoMimic 第三方依赖（扩散模型管线）
-├── pretrained_weights/               # 预训练权重目录（需下载）
-└── scripts/download_models.py        # 模型下载脚本
-```
+项目提供完整的 Web 端到端使用体验，基于 FastAPI 后端 + Vue 3 前端。
+
+### 后端 API
+
+**文件**: `backend_server.py`
+
+提供三种调用模式的生产级 API：
+
+| 端点 | 方式 | 说明 |
+|------|------|------|
+| `POST /generate` | HTTP 同步 | 提交后阻塞等待生成完成，返回视频路径 |
+| `POST /generate-stream` | SSE 流式 | 通过 Server-Sent Events 实时推送生成进度 |
+| `POST /generate-ws` | WebSocket | 创建任务并返回 task_id，随后通过 `/ws/{task_id}` 实时推送进度 |
+
+其他端点：
+- `GET /projects` — 查看历史生成项目列表（持久化在 `data/projects.json`）
+- `GET /` — 健康检查
+
+生成完成后视频文件存放于 `output/` 目录，通过 `/outputs/` 静态路由访问。CORS 已全局开放。
+
+### 前端界面
+
+**目录**: `frontend/` — Vue 3 + Element Plus + TypeScript + Vite
+
+**核心组件**: `frontend/src/components/LipSync.vue`
+
+功能：
+- 文本输入区域 — 输入要生成唇动视频的英文文本
+- 参考图片上传 — 支持缩放/平移调整，自动 MTCNN 人脸检测与裁剪
+- 实时进度反馈 — 圆形进度条 + 阶段文字说明（WebSocket 推送）
+- 结果视频播放 — 生成完成后直接预览
+- 历史项目 — 可检索的历史记录表格，含内嵌视频预览
 
 ---
 
-## 环境配置
+## 快速开始
 
 ### 本地运行
 
@@ -236,38 +243,91 @@ pip install -r requirements.txt
 # 2. 下载预训练模型
 python scripts/download_models.py
 
-# 3. 启动后端
+# 3. 启动后端（默认 http://localhost:8000）
 python backend_server.py
 
-# 4. 启动前端（新终端）
+# 4. 启动前端（新终端，默认 http://localhost:5173）
 cd frontend && npm install && npm run dev
 ```
 
-### Colab 训练
+### 推理参数配置
 
-参见 `train_and_gen.ipynb`，该笔记包含完整的：
-- 环境配置（注意保留 `protobuf`/`mediapipe` 兼容性修复命令）
-- GRID 数据集下载与预处理
-- 模型训练
-- 推理演示
+`configs/text_driven_config.yaml` 关键参数：
 
----
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `inference.frames_per_viseme` | 8 | 每视素帧数（控制语速） |
+| `inference.width/height` | 512 | 输出视频分辨率 |
+| `inference.steps` | 30 | DDIM 去噪步数（越高越精细，越慢） |
+| `inference.cfg` | 2.5 | Classifier-Free Guidance 强度 |
+| `inference.fps` | 25 | 输出视频帧率 |
+| `inference.seed` | 420 | 随机种子（固定可复现） |
+| `paths.text_model_weights` | pretrained_weights/text_driven_model.pth | Step 2 模型权重路径 |
 
-## 数据集
+### 数据集与训练
 
 训练使用 **GRID 数据集**（speaker s1 子集）：
 - 视频: [s1.mpg_vcd.zip](https://spandh.dcs.shef.ac.uk//gridcorpus/s1/video/s1.mpg_vcd.zip)
 - 对齐文件: [s1.tar](https://spandh.dcs.shef.ac.uk/gridcorpus/s1/align/s1.tar)
 - 音频: [s1.tar](https://spandh.dcs.shef.ac.uk/gridcorpus/s1/audio/s1.tar)
 
-预处理命令:
 ```bash
+# 数据预处理
 python lip_sync/data_utils/preprocess_grid.py --limit 1000 --workers 1 --skip 3
+
+# 训练
+python lip_sync/train/train_text_to_feature.py
 ```
 
-训练命令:
-```bash
-python lip_sync/train/train_text_to_feature.py
+Colab 训练参见 `train_and_gen.ipynb`。
+
+---
+
+## 项目结构
+
+```
+├── lip_sync/                         # 核心 Python 包
+│   ├── inference_pipeline.py         # 端到端推理流水线入口
+│   ├── models/
+│   │   ├── text_to_viseme.py         # Step 1: 文本→视素（G2P + 音素时长预测）
+│   │   ├── motion_gen.py             # Step 2: 视素→运动特征（Transformer + Cross-Attention）
+│   │   ├── aux_renderer.py           # 辅助解码器（训练用，特征→低分辨率帧）
+│   │   └── syncnet.py                # SyncNet 同步损失计算（训练用）
+│   ├── train/
+│   │   └── train_text_to_feature.py  # 训练脚本（MSE+LPIPS+SyncNet联合损失）
+│   ├── inference/
+│   │   └── echomimic_backend.py      # Step 3: EchoMimic 视频生成后端
+│   └── data_utils/
+│       └── preprocess_grid.py        # GRID 数据集预处理（多进程加速）
+├── configs/
+│   ├── text_driven_config.yaml       # 训练/推理主配置文件
+│   ├── inference/                    # EchoMimic 推理配置（v1/v2）
+│   └── prompts/                      # EchoMimic prompt 配置
+├── backend_server.py                 # FastAPI 后端（HTTP + SSE + WebSocket）
+├── frontend/                         # Vue 3 + Element Plus 前端
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── LipSync.vue           # 核心唇动生成交互组件
+│   │   │   └── HelloWorld.vue
+│   │   ├── App.vue
+│   │   ├── main.ts
+│   │   └── style.css
+│   ├── index.html
+│   ├── vite.config.ts
+│   └── package.json
+├── third_party/EchoMimic/            # EchoMimic 第三方依赖（扩散模型管线）
+├── scripts/
+│   └── download_models.py            # 从 HuggingFace 下载预训练权重
+├── pretrained_weights/               # 预训练权重目录（需下载）
+├── data/
+│   ├── dataset/grid/                 # GRID 数据集原始文件
+│   ├── reference/                    # 参考人脸图像
+│   └── uploads/                      # 前端上传图片
+├── output/                           # 生成结果视频
+├── loss/                             # 训练损失日志
+├── train_and_gen.ipynb               # Colab 训练与生成笔记
+├── requirements.txt                  # pip 依赖
+└── README.md
 ```
 
 ---
@@ -276,58 +336,35 @@ python lip_sync/train/train_text_to_feature.py
 
 | 依赖 | 用途 | 注意 |
 |------|------|------|
-| PyTorch ≥ 2.2 | 深度学习框架 | 支持 torch.compile 加速 |
+| PyTorch ≥ 2.2.0 | 深度学习框架 | 支持 torch.compile 加速 |
 | diffusers 0.24.0 | Stable Diffusion 管线 | EchoMimic 依赖 |
-| transformers 4.38.1 | HuggingFace 模型加载 | EchoMimic 依赖 |
+| transformers ≥ 4.38.1, < 4.41.0 | HuggingFace 模型加载 | EchoMimic 依赖 |
 | EchoMimic (third_party) | 扩散模型视频生成 | 需要 SD 和 EchoMimic 权重 |
 | g2p-en | 英文文本→音素 | Step 1 核心 |
-| mediapipe 0.10.13 | 面部关键点检测 | FAU 提取 |
+| mediapipe ≥ 0.10.13 | 面部关键点检测 | FAU 提取 |
 | facenet-pytorch (MTCNN) | 人脸检测 | 参考图像预处理 |
+| FastAPI | Web 后端框架 | SSE/WebSocket 实时通信 |
+| Vue 3 + Element Plus | 前端框架 | 交互式 Web UI |
 
 ---
 
 ## 技术亮点
 
-1. **纯文本驱动**: 完全绕过 TTS+ASR 管线，从文本直接生成特征
-2. **语言学时长预测**: 基于音素类别的统计时长模型，替代固定帧分配
+1. **纯文本驱动**: 完全绕过 TTS+ASR 管线，从文本直接生成特征，无需任何音频信号
+2. **语言学时长预测**: 基于音素类别的统计时长模型，替代固定的均匀帧分配
 3. **Cross-Attention 对齐**: 用 Transformer Decoder 将短视素序列动态对齐到长帧序列
 4. **多目标联合训练**: MSE + LPIPS 感知损失 + SyncNet 同步损失的加权优化
 5. **EchoMimic 集成**: 利用预训练的扩散模型将特征转化为高质量视频
+6. **实时进度反馈**: 后端支持 SSE / WebSocket 两种推送方式，前端提供可视化进度展示
+7. **历史项目管理**: 自动记录生成任务，支持检索与预览
 
 ---
 
-## 已知问题与改进方向
+## 常见问题
 
-### 设计层面
-
-1. **[效率] 每次推理重新初始化 EchoMimic 后端**
-   - 位置: `lip_sync/inference_pipeline.py` 第 74 行
-   - 问题: `generate_video_from_text()` 每次调用都创建新的 `EchoMimicBackend()` 实例，触发完整的模型加载流程（VAE + 两个UNet + FaceLocator + MTCNN），耗时数分钟
-   - 建议: 将 `EchoMimicBackend` 实例化移至模块级别，使用单例模式复用
-
-2. **[效率] 预处理器加载完整 EchoMimic 后端仅为了获取 Audio Processor**
-   - 位置: `lip_sync/data_utils/preprocess_grid.py` `init_worker()` 函数
-   - 问题: 每个多进程 worker 初始化完整的 `EchoMimicBackend()`（加载所有扩散模型），仅为了使用 `audio_processor.audio2feat()` 和 `feature2chunks()`
-   - 建议: 直接加载 Whisper 模型（`load_audio_model`），避免加载不相关的 UNet/VAE 权重
-
-3. **[进度逻辑] inference_pipeline 与 backend 内部 progress_callback 重复**
-   - 位置: `lip_sync/inference_pipeline.py` 和 `lip_sync/inference/echomimic_backend.py`
-   - 问题: inference_pipeline 发送 0% 和 5% 进度后，backend 内部又从 0% 开始发送（preprocess→text_features→diffusion...），导致进度条跳跃
-   - 建议: 使用偏移量统一进度范围（如 pipeline 发 0-5%，backend 内部映射为 5-100%）
-
-4. **[默认值不一致] VisemeEncoder 的 d_model 默认值**
-   - 位置: `lip_sync/models/motion_gen.py` 第 29 行
-   - 问题: `VisemeEncoder.__init__` 默认 `d_model=256`，但在 `echomimic_backend.py` 和训练配置中实际使用 `d_model=512`。虽然运行时会被覆盖，但默认值容易误导
-   - 建议: 将默认值改为 512 或与 config 保持一致
-
-### 训练数据层面
-
-5. **[FAU 信号分布] 推理时使用全零 FAU**
-   - 位置: `lip_sync/inference/echomimic_backend.py` 第 291 行
-   - 问题: 推理时传入 `torch.zeros(...)` 作为 FAU 信号，但训练集中部分样本有真实 FAU、部分为 zeros。如果真实 FAU 样本占比高，全零信号可能与训练分布有偏差
-   - 建议: 可考虑训练时提高 zeros 的比例，或推理时使用统计平均的 FAU 向量
-
-6. **[SyncNet 权重缺失处理] 预训练权重不存在时静默失败**
-   - 位置: `lip_sync/models/syncnet.py` `PretrainedSyncNet.__init__`
-   - 问题: 如果 `pretrained_weights/lipsync_expert.pth` 不存在，`torch.load` 会直接抛出异常，没有友好提示
-   - 建议: 添加文件存在性检查和友好的错误消息
+| 问题 | 排查 |
+|------|------|
+| 生成视频唇动效果不佳 | 尝试增加 `inference.steps`（如50步）或调整 `inference.cfg`（2.0~3.5） |
+| 人脸检测失败 | 确保参考图像为正面清晰人脸，避免过暗/过亮/遮挡 |
+| 显存不足 (OOM) | 降低视频分辨率（384×384）或减少 `frames_per_viseme` |
+| 模型加载失败 | 运行 `python scripts/download_models.py` 确保权重完整下载 |

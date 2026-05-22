@@ -283,7 +283,7 @@ async def generate_video_stream(
 
 
 # ==============================================================================
-# WebSocket 进度推送 (替代 SSE)
+# WebSocket 进度推送
 # ==============================================================================
 @app.post("/generate-ws")
 async def generate_video_ws(

@@ -1,20 +1,5 @@
-from pathlib import Path
-from diffusers import AutoencoderKL, DDIMScheduler
-from omegaconf import OmegaConf
-from PIL import Image
-import cv2
-import numpy as np
-import torch
-from facenet_pytorch import MTCNN
-from src.utils.util import save_videos_grid, crop_and_pad
-from src.models.face_locator import FaceLocator
-from src.pipelines.pipeline_echo_mimic import Audio2VideoPipeline
-from src.models.whisper.audio2feature import load_audio_model
-from src.models.unet_3d_echo import EchoUNet3DConditionModel
-from src.models.unet_2d_condition import UNet2DConditionModel
-import os
 import sys
-
+import os
 # 将项目根目录和 EchoMimic 添加到 Python 路径
 # 必须在导入 src.xxx 之前完成
 PROJECT_ROOT = os.path.dirname(os.path.dirname(
@@ -25,6 +10,21 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 if ECHOMIMIC_ROOT not in sys.path:
     sys.path.insert(0, ECHOMIMIC_ROOT)  # 优先使用 EchoMimic 的 src
+from src.models.unet_2d_condition import UNet2DConditionModel
+from src.models.unet_3d_echo import EchoUNet3DConditionModel
+from src.models.whisper.audio2feature import load_audio_model
+from src.pipelines.pipeline_echo_mimic import Audio2VideoPipeline
+from src.models.face_locator import FaceLocator
+from src.utils.util import save_videos_grid, crop_and_pad
+from pathlib import Path
+from diffusers import AutoencoderKL, DDIMScheduler
+from omegaconf import OmegaConf
+from PIL import Image
+import cv2
+import numpy as np
+import torch
+from facenet_pytorch import MTCNN
+
 
 
 # ==============================================================================
