@@ -24,17 +24,28 @@ class InceptionFeatureExtractor(nn.Module):
         super().__init__()
         try:
             import torchvision.models as models
-            self.inception = models.inception_v3(
-                weights=models.Inception_V3_Weights.IMAGENET1K_V1
-            ).eval().to(device)
+            inception = models.inception_v3(weights=models.Inception_V3_Weights.IMAGENET1K_V1)
         except Exception:
             try:
+                # 降级：尝试无 weights 参数的老版本 torchvision
                 import torchvision.models as models
-                self.inception = models.inception_v3(pretrained=True).eval().to(device)
+                inception = models.inception_v3(pretrained=True)
             except Exception as e:
                 raise ImportError(
                     f"无法加载 Inception-v3: {e}。请确保 torchvision 已安装。"
                 )
+
+        # 移除最后的全连接分类头 (1000 → identity)，保留 AdaptiveAvgPool2d
+        # Inception-v3 的 forward 中内置了 AdaptiveAvgPool2d + Dropout + fc，
+        # 只替换 fc 为 Identity, 输出 2048 维池化特征
+        inception.fc = nn.Identity()
+        inception.aux_logits = False
+        # 彻底移除 AuxLogits 模块（即使 eval 模式下不调用其 forward，
+        # 其 Linear 层如果 device 不匹配仍会污染注册的参数）
+        if hasattr(inception, 'AuxLogits'):
+            del inception.AuxLogits
+        self._device = torch.device(device)
+        self.inception = inception.eval().to(self._device)
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -42,45 +53,17 @@ class InceptionFeatureExtractor(nn.Module):
         x: (B, C, H, W), RGB, float32, 范围 [0, 1]
         返回: (B, 2048) 特征向量
         """
-        # 确保输入与模型在同一设备
-        if x.device != next(self.inception.parameters()).device:
-            x = x.to(next(self.inception.parameters()).device)
-
+        # 确保 x 在模型所在设备上
+        x = x.to(self._device)
         # Inception 要求输入至少 299x299
         if x.shape[-1] != 299 or x.shape[-2] != 299:
             x = F.interpolate(x, size=(299, 299), mode="bilinear", align_corners=False)
-
         # 归一化到 Inception 期望的分布
-        mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
+        mean = torch.tensor([0.485, 0.456, 0.406], device=self._device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=self._device).view(1, 3, 1, 1)
         x = (x - mean) / std
-
-        # 手动走 Inception-v3 前向，在 fc 层之前截断
-        # Inception3.forward 结构: Conv2d 特征层 → AdaptiveAvgPool2d → Dropout → flatten → fc
-        # 我们确保走完 Mixed_7c 后自己 pool，不进入 fc
-        x = self.inception._transform_input(x)
-        x = self.inception.Conv2d_1a_3x3(x)
-        x = self.inception.Conv2d_2a_3x3(x)
-        x = self.inception.Conv2d_2b_3x3(x)
-        x = self.inception.maxpool1(x)
-        x = self.inception.Conv2d_3b_1x1(x)
-        x = self.inception.Conv2d_4a_3x3(x)
-        x = self.inception.maxpool2(x)
-        x = self.inception.Mixed_5b(x)
-        x = self.inception.Mixed_5c(x)
-        x = self.inception.Mixed_5d(x)
-        x = self.inception.Mixed_6a(x)
-        x = self.inception.Mixed_6b(x)
-        x = self.inception.Mixed_6c(x)
-        x = self.inception.Mixed_6d(x)
-        x = self.inception.Mixed_6e(x)
-        x = self.inception.Mixed_7a(x)
-        x = self.inception.Mixed_7b(x)
-        x = self.inception.Mixed_7c(x)
-        # 池化 + 展平，不进入 fc
-        x = F.adaptive_avg_pool2d(x, (1, 1))
-        x = torch.flatten(x, 1)
-        return x  # (B, 2048)
+        # inception(v3) 的 forward 会执行所有特征层 → AdaptiveAvgPool → flatten → Identity
+        return self.inception(x)
 
 
 def _compute_fid_from_stats(mu1: np.ndarray, sigma1: np.ndarray,
