@@ -35,12 +35,12 @@ class InceptionFeatureExtractor(nn.Module):
                     f"无法加载 Inception-v3: {e}。请确保 torchvision 已安装。"
                 )
 
-        # 取到 Mixed_7c 之前的层，输出 2048 维特征
-        self.features = nn.Sequential(*list(inception.children())[:-3])
-        # 全局平均池化替代 AdaptiveAvgPool2d
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.eval()
-        self.to(device)
+        # 移除最后的全连接分类头 (1000 → identity)，保留 AdaptiveAvgPool2d
+        # Inception-v3 的 forward 中内置了 AdaptiveAvgPool2d + Dropout + fc，
+        # 只替换 fc 为 Identity, 输出 2048 维池化特征
+        inception.fc = nn.Identity()
+        inception.aux_logits = False  # 禁用辅助分支避免意外 forward
+        self.inception = inception.eval().to(device)
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -55,9 +55,8 @@ class InceptionFeatureExtractor(nn.Module):
         mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
         x = (x - mean) / std
-        feat = self.features(x)
-        feat = self.pool(feat)
-        return feat.view(feat.size(0), -1)
+        # inception(v3) 的 forward 会执行所有特征层 → AdaptiveAvgPool → flatten → Identity
+        return self.inception(x)
 
 
 def _compute_fid_from_stats(mu1: np.ndarray, sigma1: np.ndarray,
