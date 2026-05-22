@@ -24,25 +24,27 @@ class InceptionFeatureExtractor(nn.Module):
         super().__init__()
         try:
             import torchvision.models as models
-            # aux_logits=False: 不从构造函数创建 AuxLogits 模块
-            # weights: 新版本 torchvision 的参数
+            # 某些版本强制 aux_logits=True（与 pretrained 权重绑定），
+            # 因此先按默认加载，加载完再手动从 _modules 移除 AuxLogits
             inception = models.inception_v3(
                 weights=models.Inception_V3_Weights.IMAGENET1K_V1,
-                aux_logits=False,
             )
         except TypeError:
             try:
                 import torchvision.models as models
-                inception = models.inception_v3(pretrained=True, aux_logits=False)
+                inception = models.inception_v3(pretrained=True)
             except Exception as e:
                 raise ImportError(
                     f"无法加载 Inception-v3: {e}。请确保 torchvision 已安装。"
                 )
 
+        # 从 registered modules 中移除 AuxLogits（直接操作 _modules OrderedDict，
+        # 避免 nn.Module.__getattr__ 的陷阱）
+        if 'AuxLogits' in inception._modules:
+            inception._modules.pop('AuxLogits')
+
         # 取所有子模块(不包括最后的 fc)，用 Sequential 串联。
-        # Inception3.children() 返回所有 registered modules（Conv2d_*, maxpool*, Mixed_*），
-        # aux_logits=False 确保没有 AuxLogits 模块混入。
-        # 最后的 fc 被去掉，AdaptiveAvgPool2d 由 forward 内手动调用。
+        # children() 此时已不含 AuxLogits。
         children = list(inception.children())
         # 最后一个 child 是 fc → 去掉
         self.features = nn.Sequential(*children[:-1])
