@@ -18,14 +18,16 @@ import warnings
 # ============================================================================
 
 class InceptionFeatureExtractor(nn.Module):
-    """使用预训练 Inception-v3 提取 2048 维特征用于 FID 计算。"""
+    """使用预训练 Inception-v3 提取 2048 维特征用于 FID 计算。
+
+    通过 register_forward_hook 捕获 Mixed_7c 输出，
+    再手动 global average pooling，完全不动模型结构。
+    """
 
     def __init__(self, device="cuda"):
         super().__init__()
         try:
             import torchvision.models as models
-            # 某些版本强制 aux_logits=True（与 pretrained 权重绑定），
-            # 因此先按默认加载，加载完再手动从 _modules 移除 AuxLogits
             inception = models.inception_v3(
                 weights=models.Inception_V3_Weights.IMAGENET1K_V1,
             )
@@ -38,18 +40,18 @@ class InceptionFeatureExtractor(nn.Module):
                     f"无法加载 Inception-v3: {e}。请确保 torchvision 已安装。"
                 )
 
-        # 从 registered modules 中移除 AuxLogits（直接操作 _modules OrderedDict，
-        # 避免 nn.Module.__getattr__ 的陷阱）
-        if 'AuxLogits' in inception._modules:
-            inception._modules.pop('AuxLogits')
-
-        # 取所有子模块(不包括最后的 fc)，用 Sequential 串联。
-        # children() 此时已不含 AuxLogits。
-        children = list(inception.children())
-        # 最后一个 child 是 fc → 去掉
-        self.features = nn.Sequential(*children[:-1])
         self._device = torch.device(device)
-        self.to(self._device).eval()
+        self.inception = inception.eval().to(self._device)
+
+        # hook 捕获 Mixed_7c 的输出（即进入 avgpool+fc 之前的特征图）
+        self._hook_handle = self.inception.Mixed_7c.register_forward_hook(
+            self._capture
+        )
+        self._features = None
+
+    def _capture(self, module, input, output):
+        """Hook: 保存 Mixed_7c 的输出特征图。"""
+        self._features = output.detach()
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -65,11 +67,19 @@ class InceptionFeatureExtractor(nn.Module):
         mean = torch.tensor([0.485, 0.456, 0.406], device=self._device).view(1, 3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], device=self._device).view(1, 3, 1, 1)
         x = (x - mean) / std
-        # 经过所有特征层（Conv2d_* → maxpool → Mixed_* → Mixed_7c）
-        x = self.features(x)
-        # 全局平均池化 → 2048 维特征向量（原本在 Inception3.forward 内完成）
-        x = F.adaptive_avg_pool2d(x, (1, 1))
+        # 完整 forward，hook 会在 Mixed_7c 处捕获特征。
+        # Inception3 的 fc 层会输出 (B, 1000) 但结果被忽略。
+        self._features = None
+        self.inception(x)
+        if self._features is None:
+            raise RuntimeError("Inception-v3 hook 未被触发")
+        # 对 Mixed_7c 的输出做全局平均池化 → 2048 维
+        x = F.adaptive_avg_pool2d(self._features, (1, 1))
         return x.view(x.size(0), -1)
+
+    def __del__(self):
+        if hasattr(self, '_hook_handle'):
+            self._hook_handle.remove()
 
 
 def _compute_fid_from_stats(mu1: np.ndarray, sigma1: np.ndarray,
