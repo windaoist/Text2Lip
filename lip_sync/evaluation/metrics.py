@@ -24,28 +24,30 @@ class InceptionFeatureExtractor(nn.Module):
         super().__init__()
         try:
             import torchvision.models as models
-            inception = models.inception_v3(weights=models.Inception_V3_Weights.IMAGENET1K_V1)
-        except Exception:
+            # aux_logits=False: 不从构造函数创建 AuxLogits 模块
+            # weights: 新版本 torchvision 的参数
+            inception = models.inception_v3(
+                weights=models.Inception_V3_Weights.IMAGENET1K_V1,
+                aux_logits=False,
+            )
+        except TypeError:
             try:
-                # 降级：尝试无 weights 参数的老版本 torchvision
                 import torchvision.models as models
-                inception = models.inception_v3(pretrained=True)
+                inception = models.inception_v3(pretrained=True, aux_logits=False)
             except Exception as e:
                 raise ImportError(
                     f"无法加载 Inception-v3: {e}。请确保 torchvision 已安装。"
                 )
 
-        # 移除最后的全连接分类头 (1000 → identity)，保留 AdaptiveAvgPool2d
-        # Inception-v3 的 forward 中内置了 AdaptiveAvgPool2d + Dropout + fc，
-        # 只替换 fc 为 Identity, 输出 2048 维池化特征
-        inception.fc = nn.Identity()
-        inception.aux_logits = False
-        # 彻底移除 AuxLogits 模块（即使 eval 模式下不调用其 forward，
-        # 其 Linear 层如果 device 不匹配仍会污染注册的参数）
-        if hasattr(inception, 'AuxLogits'):
-            del inception.AuxLogits
+        # 取所有子模块(不包括最后的 fc)，用 Sequential 串联。
+        # Inception3.children() 返回所有 registered modules（Conv2d_*, maxpool*, Mixed_*），
+        # aux_logits=False 确保没有 AuxLogits 模块混入。
+        # 最后的 fc 被去掉，AdaptiveAvgPool2d 由 forward 内手动调用。
+        children = list(inception.children())
+        # 最后一个 child 是 fc → 去掉
+        self.features = nn.Sequential(*children[:-1])
         self._device = torch.device(device)
-        self.inception = inception.eval().to(self._device)
+        self.to(self._device).eval()
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -53,7 +55,6 @@ class InceptionFeatureExtractor(nn.Module):
         x: (B, C, H, W), RGB, float32, 范围 [0, 1]
         返回: (B, 2048) 特征向量
         """
-        # 确保 x 在模型所在设备上
         x = x.to(self._device)
         # Inception 要求输入至少 299x299
         if x.shape[-1] != 299 or x.shape[-2] != 299:
@@ -62,8 +63,11 @@ class InceptionFeatureExtractor(nn.Module):
         mean = torch.tensor([0.485, 0.456, 0.406], device=self._device).view(1, 3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], device=self._device).view(1, 3, 1, 1)
         x = (x - mean) / std
-        # inception(v3) 的 forward 会执行所有特征层 → AdaptiveAvgPool → flatten → Identity
-        return self.inception(x)
+        # 经过所有特征层（Conv2d_* → maxpool → Mixed_* → Mixed_7c）
+        x = self.features(x)
+        # 全局平均池化 → 2048 维特征向量（原本在 Inception3.forward 内完成）
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        return x.view(x.size(0), -1)
 
 
 def _compute_fid_from_stats(mu1: np.ndarray, sigma1: np.ndarray,
