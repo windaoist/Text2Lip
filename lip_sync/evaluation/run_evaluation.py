@@ -3,17 +3,21 @@
 
 模式:
   fast  — 使用 AuxiliaryRenderer @ 64x64，不调用扩散模型，快速迭代所有消融变体
-  full  — 生成 512x512 全分辨率视频，仅对比 Ours vs Audio-Driven 两个主方法
+  full  — 生成 512x512 全分辨率视频，计算 FID / PSNR / SSIM / LMD / SyncNet
 
 用法:
     # 快速消融实验（推荐先跑这个）
     python -m lip_sync.evaluation.run_evaluation --mode fast --test-samples 50
 
-    # 完整评测（需要 GPU，FID 在扩散输出上计算）
+    # 完整评测（需要 GPU，所有指标全开）
     python -m lip_sync.evaluation.run_evaluation --mode full --test-samples 10
 
     # 仅评测（视频已生成，跳过生成阶段）
     python -m lip_sync.evaluation.run_evaluation --mode full --eval-only
+
+    # 跳过 LMD 或 SyncNet（若未安装对应依赖）
+    python -m lip_sync.evaluation.run_evaluation --mode full --eval-only --no-lmd --no-syncnet
+    python -m lip_sync.evaluation.run_evaluation --mode full --eval-only --lmd-sample-every 5
 """
 
 from lip_sync.evaluation.ablation import (
@@ -26,6 +30,7 @@ from lip_sync.evaluation.metrics import (
     calculate_psnr,
     calculate_ssim,
     calculate_lmd,
+    calculate_syncnet_score,
     extract_inception_features,
     extract_lip_landmarks,
     InceptionFeatureExtractor,
@@ -74,6 +79,8 @@ class EvalConfig:
     # 评测
     batch_size_fid: int = 32
     compute_lmd: bool = True
+    lmd_sample_every_n: int = 1    # 每隔 N 个样本计算一次 LMD（1=全部计算）
+    compute_syncnet: bool = True
     skip_generation: bool = False
     debug: bool = False
 
@@ -308,8 +315,8 @@ class EvaluationRunner:
 
     def _evaluate_full_mode(self) -> Dict[str, Dict]:
         """
-        完整模式：生成 512x512 扩散视频，计算 FID。
-        注意：扩散生成非常慢，仅对比 Ours vs Audio-Driven。
+        完整模式：生成 512x512 扩散视频，计算所有指标（FID / PSNR / SSIM / LMD / SyncNet）。
+        仅对比 Ours vs Audio-Driven 两个主方法。
         """
         print("\n" + "=" * 60)
         print("完整评测模式 (512x512 扩散模型)")
@@ -323,7 +330,7 @@ class EvaluationRunner:
             ("audio_driven_echomimic", None),
         ]
 
-        # 生成
+        # ── 生成阶段 ──
         if not self.config.skip_generation:
             for method_key, _ in methods:
                 print(f"\n[*] 正在生成 [{method_key}]...")
@@ -332,42 +339,153 @@ class EvaluationRunner:
                         print(f"  [{sidx}/{len(samples)}] {s['name']}")
                     self._gen_video(s, method_key)
 
-        # GT 特征
+        # ── 加载全部 GT（保留逐样本数据用于逐帧指标）──
         print("\n[*] 加载真实帧...")
-        all_gt = [self._get_gt_data(s)["gt_frames"] for s in samples]
-        gt_all = torch.cat(all_gt, dim=0)
+        gt_samples = []
+        for s in samples:
+            d = self._get_gt_data(s)
+            gt_samples.append(d)
+        gt_all = torch.cat([d["gt_frames"] for d in gt_samples], dim=0)
+
+        print("[*] 计算真实帧 Inception 特征（用于 FID）...")
         real_feats = extract_inception_features(
             gt_all, self.inception_extractor, self.device, self.config.batch_size_fid
         )
 
-        # 评测
+        # ── 评测每个方法 ──
         for method_key, _ in methods:
-            print(f"\n[*] 评测 [{method_key}]...")
+            print(f"\n{'=' * 40}")
+            print(f"评测 [{method_key}]")
+            print(f"{'=' * 40}")
+
             method_dir = self.output_root / method_key
             if not method_dir.exists():
                 print(f"  [-] 目录不存在，跳过")
                 continue
 
-            frames_list = []
-            for s in samples:
-                vp = method_dir / f"{s['name']}.mp4"
-                if vp.exists() and vp.stat().st_size > 1024:
-                    try:
-                        frames_list.append(self._load_video(str(vp)))
-                    except Exception as e:
-                        print(f"  [-] 加载失败 {vp.name}: {e}")
+            gen_frame_list = []      # for FID
+            psnr_list = []
+            ssim_list = []
+            lm_gen_all = []
+            lm_gt_all = []
+            syncnet_list = []
+            skipped = 0
 
-            if not frames_list:
+            for sidx, s in enumerate(samples):
+                vpath = method_dir / f"{s['name']}.mp4"
+                if not vpath.exists() or vpath.stat().st_size <= 1024:
+                    skipped += 1
+                    continue
+
+                # 加载生成帧和 GT 帧
+                try:
+                    gen_frames = self._load_video(str(vpath))  # (T, C, H, W), [-1, 1]
+                except Exception as e:
+                    print(f"  [-] 加载失败 {vpath.name}: {e}")
+                    skipped += 1
+                    continue
+
+                gt_data = gt_samples[sidx]
+                gt_frames = gt_data["gt_frames"]                 # (T_gt, C, H_gt, W_gt), [-1, 1]
+                whisper = gt_data["whisper_features"]            # (T_whisper, 19200)
+
+                # 对齐时间步
+                T = min(gen_frames.shape[0], gt_frames.shape[0], whisper.shape[0])
+                if T < 5:
+                    print(f"  [-] 帧数不足 ({T})，跳过 {s['name']}")
+                    skipped += 1
+                    continue
+                gen_crop = gen_frames[:T]                        # (T, C, H, W)
+                gt_crop = gt_frames[:T]                          # (T, C, H_gt, W_gt)
+
+                # ── FID 累积 ──
+                gen_frame_list.append(gen_crop)
+
+                # ── PSNR / SSIM（将生成帧缩放到 GT 分辨率）──
+                if gen_crop.shape[-2:] != gt_crop.shape[-2:]:
+                    gen_for_compare = torch.nn.functional.interpolate(
+                        gen_crop.permute(1, 0, 2, 3).unsqueeze(0),  # (1, C, T, H, W)
+                        size=(gt_crop.shape[-2], gt_crop.shape[-1]),
+                        mode="bilinear", align_corners=False,
+                    ).squeeze(0).permute(1, 0, 2, 3)              # back to (T, C, H_gt, W_gt)
+                else:
+                    gen_for_compare = gen_crop
+
+                # 注意：PSNR/SSIM 输入应为 (B, T, C, H, W)
+                psnr_per_frame = calculate_psnr(
+                    gen_for_compare.unsqueeze(0), gt_crop.unsqueeze(0)
+                )  # (1, T)
+                ssim_per_frame = calculate_ssim(
+                    gen_for_compare.unsqueeze(0), gt_crop.unsqueeze(0)
+                )  # (1, T)
+
+                psnr_list.append(psnr_per_frame.mean().item())
+                ssim_list.append(ssim_per_frame.mean().item())
+
+                # ── LMD（每隔 lmd_sample_every_n 个样本计算一次）──
+                if self.config.compute_lmd and sidx % self.config.lmd_sample_every_n == 0:
+                    # 帧二次采样：每个样本最多处理 100 帧
+                    step = max(1, T // 100)
+                    lm_gen = extract_lip_landmarks(gen_crop[::step])
+                    lm_gt = extract_lip_landmarks(gt_crop[::step])
+                    lm_gen_all.extend(lm_gen)
+                    lm_gt_all.extend(lm_gt)
+
+                # ── SyncNet ──
+                if self.config.compute_syncnet:
+                    try:
+                        sc, _ = calculate_syncnet_score(
+                            gen_crop, whisper[:T], device=self.device
+                        )
+                        syncnet_list.append(sc)
+                    except Exception as e:
+                        print(f"  [-] SyncNet 失败 [{s['name']}]: {e}")
+
+            if skipped:
+                print(f"  [-] 跳过了 {skipped}/{len(samples)} 个无效样本")
+
+            # ── 聚合 ──
+            if len(gen_frame_list) < 2:
+                print(f"  [-] 有效样本不足（<2），跳过 {method_key}")
                 continue
 
-            gen_all = torch.cat(frames_list, dim=0)
-            print(f"  计算 FID ({gen_all.shape[0]} 帧)...")
+            # FID
+            total_frames = sum(f.shape[0] for f in gen_frame_list)
+            print(f"  计算 FID ({total_frames} 帧)...")
+            gen_all = torch.cat(gen_frame_list, dim=0)
             gen_feats = extract_inception_features(
                 gen_all, self.inception_extractor, self.device, self.config.batch_size_fid
             )
             fid = calculate_fid(real_feats, gen_feats)
-            results[method_key] = {"FID": fid}
-            print(f"  FID = {fid:.4f}")
+
+            metrics = {
+                "FID": fid,
+                "PSNR": float(np.mean(psnr_list)),
+                "SSIM": float(np.mean(ssim_list)),
+            }
+
+            # LMD
+            if lm_gen_all:
+                lmd, lmd_std, valid_ratio = calculate_lmd(lm_gen_all, lm_gt_all)
+                metrics.update({
+                    "LMD": lmd,
+                    "LMD_std": lmd_std,
+                    "ValidRatio": valid_ratio,
+                })
+
+            # SyncNet
+            if syncnet_list:
+                metrics["SyncNet"] = float(np.mean(syncnet_list))
+
+            results[method_key] = metrics
+
+            # 打印摘要
+            summary = f"  FID={fid:.4f}  PSNR={np.mean(psnr_list):.2f}  SSIM={np.mean(ssim_list):.4f}"
+            if "LMD" in metrics:
+                summary += f"  LMD={metrics['LMD']:.4f}"
+            if "SyncNet" in metrics:
+                summary += f"  SyncNet={metrics['SyncNet']:.4f}"
+            print(summary)
 
         return results
 
@@ -474,7 +592,10 @@ def main():
         "--weights", default="pretrained_weights/text_driven_model.pth")
     p.add_argument("--output", default="output/evaluation")
     p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--no-lmd", action="store_true")
+    p.add_argument("--no-lmd", action="store_true", help="跳过 LMD 计算（节省时间）")
+    p.add_argument("--lmd-sample-every", type=int, default=1,
+                   help="每隔 N 个样本计算一次 LMD（默认 1=全部）")
+    p.add_argument("--no-syncnet", action="store_true", help="跳过 SyncNet 计算")
     p.add_argument("--device", default="cuda")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--debug", action="store_true")
@@ -485,6 +606,8 @@ def main():
         test_split_ratio=args.test_split_ratio, data_dir=args.data_dir,
         text_model_weights=args.weights, output_root=args.output,
         batch_size_fid=args.batch_size, compute_lmd=not args.no_lmd,
+        lmd_sample_every_n=args.lmd_sample_every,
+        compute_syncnet=not args.no_syncnet,
         skip_generation=args.eval_only, device=args.device,
         seed=args.seed, debug=args.debug,
     )
